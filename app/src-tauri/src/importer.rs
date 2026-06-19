@@ -132,6 +132,9 @@ pub fn import_tarball(
             summary,
         )?;
     }
+    // The extracted tarball can be several MB; remove it now that everything
+    // has been copied into the library so it doesn't accumulate on disk.
+    std::fs::remove_dir_all(staging_dir).ok();
     Ok(())
 }
 
@@ -253,5 +256,9 @@ mod tests {
             .path()
             .join("_uncategorized/skill/packed/SKILL.md")
             .exists());
+        assert!(
+            !staging.exists(),
+            "staging dir should be cleaned up after import_tarball returns"
+        );
     }
 }
