@@ -52,45 +52,54 @@ pub fn list_locations(state: State<AppState>) -> Result<Vec<Location>, String> {
     db::list_locations(&conn).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
-pub fn run_import(state: State<AppState>) -> Result<crate::model::ImportSummary, String> {
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
+/// Pure import pipeline (no Tauri runtime needed): live-scan the default
+/// locations under `home`, then optionally import the tarball.
+pub fn import_all(
+    conn: &rusqlite::Connection,
+    library_root: &Path,
+    home: &Path,
+    tarball_path: Option<&Path>,
+) -> Result<crate::model::ImportSummary, String> {
     let mut summary = crate::model::ImportSummary::default();
 
-    for (label, path, kind) in default_location_candidates(&state.home) {
+    for (label, path, kind) in default_location_candidates(home) {
         let path_str = path.to_string_lossy().to_string();
         let loc_id =
-            db::upsert_location(&conn, &label, &path_str, kind).map_err(|e| e.to_string())?;
+            db::upsert_location(conn, &label, &path_str, kind).map_err(|e| e.to_string())?;
         let scanned = crate::scanner::scan_location(&path, kind).map_err(|e| e.to_string())?;
         summary.locations_scanned += 1;
         for item in &scanned {
-            importer::import_scanned(&conn, &state.library_root, loc_id, &path, item, &mut summary)
+            importer::import_scanned(conn, library_root, loc_id, &path, item, &mut summary)
                 .map_err(|e| e.to_string())?;
         }
     }
 
-    if let Some(tarball) = &state.tarball_path {
+    if let Some(tarball) = tarball_path {
         if tarball.exists() {
             let loc_id = db::upsert_location(
-                &conn,
+                conn,
                 "Inventory tarball",
                 &tarball.to_string_lossy(),
                 LocationKind::Tarball,
             )
             .map_err(|e| e.to_string())?;
-            let staging = state.library_root.join("_staging");
-            importer::import_tarball(
-                &conn,
-                &state.library_root,
-                loc_id,
-                tarball,
-                &staging,
-                &mut summary,
-            )
-            .map_err(|e| e.to_string())?;
+            let staging = library_root.join("_staging");
+            importer::import_tarball(conn, library_root, loc_id, tarball, &staging, &mut summary)
+                .map_err(|e| e.to_string())?;
         }
     }
     Ok(summary)
+}
+
+#[tauri::command]
+pub fn run_import(state: State<AppState>) -> Result<crate::model::ImportSummary, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    import_all(
+        &conn,
+        &state.library_root,
+        &state.home,
+        state.tarball_path.as_deref(),
+    )
 }
 
 #[cfg(test)]
@@ -105,5 +114,24 @@ mod tests {
         let cands = default_location_candidates(home.path());
         assert_eq!(cands.len(), 1);
         assert_eq!(cands[0].2, LocationKind::ClaudeSkills);
+    }
+
+    /// Opt-in end-to-end check against the real machine. Live-scans this user's
+    /// actual skill/agent locations into a throwaway library and asserts that
+    /// at least one item was imported. Run with:
+    ///   cargo test imports_from_real_machine -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn imports_from_real_machine() {
+        let home = dirs::home_dir().expect("home dir");
+        let lib = tempfile::tempdir().unwrap();
+        let conn = db::open_in_memory().unwrap();
+        let summary = import_all(&conn, lib.path(), &home, None).unwrap();
+        println!("real import summary: {:?}", summary);
+        assert!(
+            summary.items_found > 0,
+            "expected to find real skills/agents under {home:?}"
+        );
+        assert!(!db::list_items(&conn).unwrap().is_empty());
     }
 }
