@@ -6,6 +6,7 @@ mod meta;
 mod model;
 mod scanner;
 mod slug;
+pub mod taxonomy;
 
 use tauri::Manager;
 
