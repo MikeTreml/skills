@@ -1,5 +1,6 @@
 mod commands;
-mod db;
+pub mod db;
+pub mod dedup;
 mod hash;
 mod importer;
 mod meta;

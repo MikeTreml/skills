@@ -10,9 +10,14 @@ export interface Item {
   description: string;
   category: string | null;
   subcategory: string | null;
+  object: string | null;
+  sub_object: string | null;
+  verb: string | null;
+  qualifier: string | null;
   canonical_hash: string;
   library_path: string;
   has_variants: boolean;
+  archived: boolean;
 }
 
 export interface ImportSummary {

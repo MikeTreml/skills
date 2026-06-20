@@ -35,6 +35,11 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
             description TEXT NOT NULL DEFAULT '',
             category TEXT,
             subcategory TEXT,
+            object TEXT,
+            sub_object TEXT,
+            verb TEXT,
+            qualifier TEXT,
+            archived INTEGER NOT NULL DEFAULT 0,
             canonical_hash TEXT NOT NULL,
             library_path TEXT NOT NULL,
             has_variants INTEGER NOT NULL DEFAULT 0,
@@ -59,8 +64,58 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
             enabled INTEGER NOT NULL DEFAULT 1,
             UNIQUE(path, item_type)
         );
+        CREATE TABLE IF NOT EXISTS verb_map (
+            id INTEGER PRIMARY KEY,
+            canonical TEXT NOT NULL,
+            synonym TEXT NOT NULL UNIQUE
+        );
         ",
-    )
+    )?;
+    // Migrate pre-existing item tables that predate the v2 classification columns.
+    for (col, decl) in [
+        ("object", "TEXT"),
+        ("sub_object", "TEXT"),
+        ("verb", "TEXT"),
+        ("qualifier", "TEXT"),
+        ("archived", "INTEGER NOT NULL DEFAULT 0"),
+    ] {
+        ensure_column(conn, "items", col, decl)?;
+    }
+    seed_verb_map(conn)?;
+    Ok(())
+}
+
+/// Add `col` to `table` if it isn't already present (table/col are hard-coded, not user input).
+fn ensure_column(conn: &Connection, table: &str, col: &str, decl: &str) -> rusqlite::Result<()> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let cols: Vec<String> = stmt
+        .query_map([], |r| r.get::<_, String>(1))?
+        .collect::<rusqlite::Result<_>>()?;
+    if !cols.iter().any(|c| c == col) {
+        conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {col} {decl}"), [])?;
+    }
+    Ok(())
+}
+
+/// Seed the editable verb map from the canonical taxonomy (only if empty).
+fn seed_verb_map(conn: &Connection) -> rusqlite::Result<()> {
+    let n: i64 = conn.query_row("SELECT COUNT(*) FROM verb_map", [], |r| r.get(0))?;
+    if n > 0 {
+        return Ok(());
+    }
+    for (canon, syns) in crate::taxonomy::verb_synonyms() {
+        conn.execute(
+            "INSERT OR IGNORE INTO verb_map (canonical, synonym) VALUES (?1, ?2)",
+            params![canon, canon.to_ascii_lowercase()],
+        )?;
+        for s in *syns {
+            conn.execute(
+                "INSERT OR IGNORE INTO verb_map (canonical, synonym) VALUES (?1, ?2)",
+                params![canon, s],
+            )?;
+        }
+    }
+    Ok(())
 }
 
 /// Insert a location if its (kind, root_path) is new; return its id either way.
@@ -160,8 +215,9 @@ pub fn upsert_placement(
 pub fn list_items(conn: &Connection) -> rusqlite::Result<Vec<Item>> {
     let mut stmt = conn.prepare(
         "SELECT id, item_type, name, slug, description, category, subcategory,
-                canonical_hash, library_path, has_variants
-         FROM items ORDER BY name COLLATE NOCASE",
+                object, sub_object, verb, qualifier,
+                canonical_hash, library_path, has_variants, archived
+         FROM items WHERE archived = 0 ORDER BY name COLLATE NOCASE",
     )?;
     let rows = stmt.query_map([], |r| {
         let type_str: String = r.get(1)?;
@@ -173,12 +229,65 @@ pub fn list_items(conn: &Connection) -> rusqlite::Result<Vec<Item>> {
             description: r.get(4)?,
             category: r.get(5)?,
             subcategory: r.get(6)?,
-            canonical_hash: r.get(7)?,
-            library_path: r.get(8)?,
-            has_variants: r.get::<_, i64>(9)? != 0,
+            object: r.get(7)?,
+            sub_object: r.get(8)?,
+            verb: r.get(9)?,
+            qualifier: r.get(10)?,
+            canonical_hash: r.get(11)?,
+            library_path: r.get(12)?,
+            has_variants: r.get::<_, i64>(13)? != 0,
+            archived: r.get::<_, i64>(14)? != 0,
         })
     })?;
     rows.collect()
+}
+
+/// Store the canonical classification (Object / Sub / Verb / Qualifier) for an item.
+pub fn set_classification(
+    conn: &Connection,
+    item_id: i64,
+    object: Option<&str>,
+    sub_object: Option<&str>,
+    verb: Option<&str>,
+    qualifier: Option<&str>,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE items SET object=?2, sub_object=?3, verb=?4, qualifier=?5,
+                          updated_at=datetime('now') WHERE id=?1",
+        params![item_id, object, sub_object, verb, qualifier],
+    )?;
+    Ok(())
+}
+
+pub fn set_archived(conn: &Connection, item_id: i64, archived: bool) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE items SET archived=?2, updated_at=datetime('now') WHERE id=?1",
+        params![item_id, archived as i64],
+    )?;
+    Ok(())
+}
+
+pub fn list_verb_map(conn: &Connection) -> rusqlite::Result<Vec<(String, String)>> {
+    let mut stmt =
+        conn.prepare("SELECT canonical, synonym FROM verb_map ORDER BY canonical, synonym")?;
+    let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    rows.collect()
+}
+
+pub fn add_synonym(conn: &Connection, canonical: &str, synonym: &str) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT OR IGNORE INTO verb_map (canonical, synonym) VALUES (?1, ?2)",
+        params![canonical, synonym.to_ascii_lowercase()],
+    )?;
+    Ok(())
+}
+
+pub fn remove_synonym(conn: &Connection, synonym: &str) -> rusqlite::Result<()> {
+    conn.execute(
+        "DELETE FROM verb_map WHERE synonym = ?1",
+        params![synonym.to_ascii_lowercase()],
+    )?;
+    Ok(())
 }
 
 pub fn list_locations(conn: &Connection) -> rusqlite::Result<Vec<Location>> {
@@ -314,5 +423,40 @@ mod tests {
         assert_eq!(dirs[0].path, "/my/agents");
         remove_scan_dir(&c, id).unwrap();
         assert!(list_scan_dirs(&c).unwrap().is_empty());
+    }
+
+    #[test]
+    fn classification_round_trips() {
+        let c = open_in_memory().unwrap();
+        let (id, _) =
+            insert_item_if_absent(&c, ItemType::Skill, "x", "x", "d", "h", "lib/x").unwrap();
+        set_classification(&c, id, Some("Ax"), Some("Form"), Some("Create"), Some("Expert")).unwrap();
+        let items = list_items(&c).unwrap();
+        let it = &items[0];
+        assert_eq!(it.object.as_deref(), Some("Ax"));
+        assert_eq!(it.sub_object.as_deref(), Some("Form"));
+        assert_eq!(it.verb.as_deref(), Some("Create"));
+        assert_eq!(it.qualifier.as_deref(), Some("Expert"));
+    }
+
+    #[test]
+    fn archived_items_are_hidden() {
+        let c = open_in_memory().unwrap();
+        let (id, _) =
+            insert_item_if_absent(&c, ItemType::Skill, "x", "x", "d", "h", "lib/x").unwrap();
+        assert_eq!(list_items(&c).unwrap().len(), 1);
+        set_archived(&c, id, true).unwrap();
+        assert!(list_items(&c).unwrap().is_empty());
+    }
+
+    #[test]
+    fn verb_map_is_seeded_and_editable() {
+        let c = open_in_memory().unwrap();
+        let map = list_verb_map(&c).unwrap();
+        assert!(map.iter().any(|(canon, syn)| canon == "Create" && syn == "generate"));
+        add_synonym(&c, "Create", "Spawn").unwrap();
+        assert!(list_verb_map(&c).unwrap().iter().any(|(_, s)| s == "spawn"));
+        remove_synonym(&c, "spawn").unwrap();
+        assert!(!list_verb_map(&c).unwrap().iter().any(|(_, s)| s == "spawn"));
     }
 }

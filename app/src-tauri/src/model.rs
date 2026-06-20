@@ -70,9 +70,14 @@ pub struct Item {
     pub description: String,
     pub category: Option<String>,
     pub subcategory: Option<String>,
+    pub object: Option<String>,
+    pub sub_object: Option<String>,
+    pub verb: Option<String>,
+    pub qualifier: Option<String>,
     pub canonical_hash: String,
     pub library_path: String,
     pub has_variants: bool,
+    pub archived: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
