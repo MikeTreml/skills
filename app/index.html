@@ -7,13 +7,21 @@
     <title>Skill &amp; Agent Library</title>
     <script type="module" src="/src/main.ts" defer></script>
   </head>
-
   <body>
-    <main class="container">
-      <h1>Skill &amp; Agent Library</h1>
-      <button id="import">Scan &amp; import</button>
-      <p id="status"></p>
-      <ul id="items"></ul>
-    </main>
+    <div id="app">
+      <header class="topbar">
+        <h1>Skill &amp; Agent Library</h1>
+        <input id="search" class="search" type="search" placeholder="Search skills &amp; agents…" />
+        <span id="status" class="status"></span>
+        <button id="import" class="primary">⟳ Scan &amp; import</button>
+      </header>
+      <div class="layout">
+        <nav id="sidebar" class="sidebar"></nav>
+        <main class="content">
+          <ul id="items" class="items"></ul>
+          <p id="empty" class="empty" hidden>Nothing here yet — click <b>Scan &amp; import</b>.</p>
+        </main>
+      </div>
+    </div>
   </body>
 </html>
