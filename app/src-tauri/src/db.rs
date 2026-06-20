@@ -1,4 +1,4 @@
-use crate::model::{Item, ItemType, Location, LocationKind};
+use crate::model::{Item, ItemType, Location, LocationKind, ScanDir};
 use rusqlite::{params, Connection};
 
 pub fn open(path: &std::path::Path) -> rusqlite::Result<Connection> {
@@ -51,6 +51,13 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
             status TEXT NOT NULL,
             last_scanned TEXT NOT NULL DEFAULT (datetime('now')),
             UNIQUE(item_id, location_id)
+        );
+        CREATE TABLE IF NOT EXISTS scan_dirs (
+            id INTEGER PRIMARY KEY,
+            path TEXT NOT NULL,
+            item_type TEXT NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            UNIQUE(path, item_type)
         );
         ",
     )
@@ -189,6 +196,38 @@ pub fn list_locations(conn: &Connection) -> rusqlite::Result<Vec<Location>> {
     rows.collect()
 }
 
+/// Insert a user scan dir if (path, item_type) is new; return its id.
+pub fn add_scan_dir(conn: &Connection, path: &str, item_type: ItemType) -> rusqlite::Result<i64> {
+    conn.execute(
+        "INSERT OR IGNORE INTO scan_dirs (path, item_type) VALUES (?1, ?2)",
+        params![path, item_type.as_str()],
+    )?;
+    conn.query_row(
+        "SELECT id FROM scan_dirs WHERE path = ?1 AND item_type = ?2",
+        params![path, item_type.as_str()],
+        |r| r.get(0),
+    )
+}
+
+pub fn list_scan_dirs(conn: &Connection) -> rusqlite::Result<Vec<ScanDir>> {
+    let mut stmt = conn.prepare("SELECT id, path, item_type, enabled FROM scan_dirs ORDER BY id")?;
+    let rows = stmt.query_map([], |r| {
+        let t: String = r.get(2)?;
+        Ok(ScanDir {
+            id: r.get(0)?,
+            path: r.get(1)?,
+            item_type: ItemType::parse(&t).unwrap_or(ItemType::Skill),
+            enabled: r.get::<_, i64>(3)? != 0,
+        })
+    })?;
+    rows.collect()
+}
+
+pub fn remove_scan_dir(conn: &Connection, id: i64) -> rusqlite::Result<()> {
+    conn.execute("DELETE FROM scan_dirs WHERE id = ?1", params![id])?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -254,5 +293,18 @@ mod tests {
             insert_item_if_absent(&c, ItemType::Skill, "x", "x", "d", "h", "lib/x").unwrap();
         set_has_variants(&c, id, true).unwrap();
         assert!(list_items(&c).unwrap()[0].has_variants);
+    }
+
+    #[test]
+    fn scan_dirs_crud() {
+        let c = open_in_memory().unwrap();
+        let id = add_scan_dir(&c, "/my/agents", ItemType::Agent).unwrap();
+        add_scan_dir(&c, "/my/agents", ItemType::Agent).unwrap(); // idempotent
+        let dirs = list_scan_dirs(&c).unwrap();
+        assert_eq!(dirs.len(), 1);
+        assert_eq!(dirs[0].item_type, ItemType::Agent);
+        assert_eq!(dirs[0].path, "/my/agents");
+        remove_scan_dir(&c, id).unwrap();
+        assert!(list_scan_dirs(&c).unwrap().is_empty());
     }
 }

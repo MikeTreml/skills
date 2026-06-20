@@ -44,6 +44,9 @@ pub fn run() {
             commands::list_items,
             commands::list_locations,
             commands::run_import,
+            commands::list_scan_dirs,
+            commands::add_scan_dir,
+            commands::remove_scan_dir,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

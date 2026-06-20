@@ -25,7 +25,9 @@ pub fn import_scanned(
             s
         }
     };
-    let dest = if scanned.item_type == ItemType::Agent {
+    // A file source (agent .md, or a single-file skill) lands as <slug>.md inside
+    // its library folder; a directory source (folder skill) copies the whole folder.
+    let dest = if scanned.source_path.is_file() {
         library_dest(library_root, scanned.item_type, &slug).join(format!("{slug}.md"))
     } else {
         library_dest(library_root, scanned.item_type, &slug)

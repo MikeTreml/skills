@@ -1,4 +1,4 @@
-use crate::model::{Item, Location, LocationKind};
+use crate::model::{Item, ItemType, Location, LocationKind, ScanDir};
 use crate::{db, importer};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -146,6 +146,36 @@ pub fn import_all(
         scan_and_import_location(conn, library_root, &label, &path, kind, &mut summary)?;
     }
 
+    // User-added scan directories, with type-aware custom detection + titling.
+    for sd in db::list_scan_dirs(conn).map_err(|e| e.to_string())? {
+        if !sd.enabled {
+            continue;
+        }
+        let path = PathBuf::from(&sd.path);
+        if !path.exists() {
+            continue;
+        }
+        let label = format!(
+            "{} ({})",
+            path.file_name().and_then(|s| s.to_str()).unwrap_or("custom"),
+            sd.item_type.as_str()
+        );
+        // Location kind is just for bookkeeping; scan_custom drives detection.
+        let kind = if sd.item_type == ItemType::Agent {
+            LocationKind::Agents
+        } else {
+            LocationKind::Project
+        };
+        let loc_id =
+            db::upsert_location(conn, &label, &sd.path, kind).map_err(|e| e.to_string())?;
+        let scanned = crate::scanner::scan_custom(&path, sd.item_type).map_err(|e| e.to_string())?;
+        summary.locations_scanned += 1;
+        for item in &scanned {
+            importer::import_scanned(conn, library_root, loc_id, &path, item, &mut summary)
+                .map_err(|e| e.to_string())?;
+        }
+    }
+
     if let Some(tarball) = tarball_path {
         if tarball.exists() {
             let loc_id = db::upsert_location(
@@ -174,6 +204,28 @@ pub fn run_import(state: State<AppState>) -> Result<crate::model::ImportSummary,
     )
 }
 
+#[tauri::command]
+pub fn list_scan_dirs(state: State<AppState>) -> Result<Vec<ScanDir>, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    db::list_scan_dirs(&conn).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn add_scan_dir(state: State<AppState>, path: String, item_type: ItemType) -> Result<(), String> {
+    if !Path::new(&path).is_dir() {
+        return Err(format!("Not a directory: {path}"));
+    }
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    db::add_scan_dir(&conn, &path, item_type).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn remove_scan_dir(state: State<AppState>, id: i64) -> Result<(), String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    db::remove_scan_dir(&conn, id).map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -186,6 +238,33 @@ mod tests {
         let cands = default_location_candidates(home.path());
         assert_eq!(cands.len(), 1);
         assert_eq!(cands[0].2, LocationKind::ClaudeSkills);
+    }
+
+    #[test]
+    fn import_all_includes_custom_scan_dirs() {
+        let home = tempfile::tempdir().unwrap(); // empty: no default/project locations
+        let lib = tempfile::tempdir().unwrap();
+        let custom = tempfile::tempdir().unwrap();
+        // folder skill (frontmatter name should be ignored in favour of folder name)
+        let folder = custom.path().join("my-skill-folder");
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(folder.join("SKILL.md"), "---\nname: Ignored FM\n---\nbody").unwrap();
+        // single-file skill titled by its heading
+        fs::write(custom.path().join("loose.md"), "# Loose One\nbody").unwrap();
+
+        let conn = db::open_in_memory().unwrap();
+        db::add_scan_dir(&conn, custom.path().to_str().unwrap(), ItemType::Skill).unwrap();
+
+        let summary = import_all(&conn, lib.path(), home.path(), None).unwrap();
+
+        let names: Vec<_> = db::list_items(&conn)
+            .unwrap()
+            .into_iter()
+            .map(|i| i.name)
+            .collect();
+        assert!(names.contains(&"my-skill-folder".to_string()), "got {names:?}");
+        assert!(names.contains(&"Loose One".to_string()), "got {names:?}");
+        assert!(summary.items_new >= 2);
     }
 
     #[test]

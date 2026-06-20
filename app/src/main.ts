@@ -1,15 +1,26 @@
-import { listItems, runImport, type Item } from "./api";
+import {
+  addScanDir,
+  listItems,
+  listScanDirs,
+  removeScanDir,
+  runImport,
+  type Item,
+  type ItemType,
+  type ScanDir,
+} from "./api";
 
 const searchEl = document.getElementById("search") as HTMLInputElement;
 const importBtn = document.getElementById("import") as HTMLButtonElement;
 const statusEl = document.getElementById("status")!;
 const listEl = document.getElementById("items")!;
-const sidebarEl = document.getElementById("sidebar")!;
+const filtersEl = document.getElementById("filters")!;
+const sourcesEl = document.getElementById("sources")!;
 const emptyEl = document.getElementById("empty") as HTMLParagraphElement;
 
 type Filter = "all" | "skill" | "agent";
 
 let allItems: Item[] = [];
+let scanDirs: ScanDir[] = [];
 let activeFilter: Filter = "all";
 let query = "";
 
@@ -25,19 +36,65 @@ function counts() {
   return { all: allItems.length, skill, agent };
 }
 
-function renderSidebar() {
+function renderFilters() {
   const c = counts();
   const btn = (key: Filter, label: string, n: number) =>
     `<button class="nav${activeFilter === key ? " active" : ""}" data-filter="${key}">` +
     `<span>${label}</span><span class="count">${n}</span></button>`;
-  sidebarEl.innerHTML =
-    `<div class="nav-group">${btn("all", "All", c.all)}${btn("skill", "Skills", c.skill)}${btn("agent", "Agents", c.agent)}</div>` +
-    `<div class="nav-note">Categories appear here once AI classification (Milestone 3) is built.</div>`;
-  for (const b of sidebarEl.querySelectorAll<HTMLButtonElement>(".nav")) {
+  filtersEl.innerHTML = `<div class="nav-group">${btn("all", "All", c.all)}${btn(
+    "skill",
+    "Skills",
+    c.skill,
+  )}${btn("agent", "Agents", c.agent)}</div>`;
+  for (const b of filtersEl.querySelectorAll<HTMLButtonElement>(".nav")) {
     b.addEventListener("click", () => {
       activeFilter = b.dataset.filter as Filter;
-      renderSidebar();
+      renderFilters();
       renderList();
+    });
+  }
+}
+
+function renderSources() {
+  const rows = scanDirs
+    .map(
+      (d) =>
+        `<li class="src-item"><span class="badge ${d.item_type}">${d.item_type}</span>` +
+        `<span class="src-path" title="${escapeHtml(d.path)}">${escapeHtml(d.path)}</span>` +
+        `<button class="src-rm" data-id="${d.id}" title="Remove">✕</button></li>`,
+    )
+    .join("");
+  sourcesEl.innerHTML =
+    `<h3>Custom sources</h3>` +
+    `<input id="dir-input" class="dir-input" placeholder="C:\\path\\to\\folder" />` +
+    `<div class="add-row">` +
+    `<button id="add-agents" class="add-btn">+ Agents dir</button>` +
+    `<button id="add-skills" class="add-btn">+ Skills dir</button>` +
+    `</div>` +
+    `<ul class="src-list">${rows}</ul>` +
+    (scanDirs.length ? `<div class="nav-note">Click <b>Scan &amp; import</b> to pick up changes.</div>` : "");
+
+  const input = document.getElementById("dir-input") as HTMLInputElement;
+  const add = async (type: ItemType) => {
+    const path = input.value.trim();
+    if (!path) return;
+    try {
+      await addScanDir(path, type);
+      input.value = "";
+      scanDirs = await listScanDirs();
+      renderSources();
+      statusEl.textContent = `Added ${type} source — click Scan & import`;
+    } catch (e) {
+      statusEl.textContent = `Error: ${e}`;
+    }
+  };
+  document.getElementById("add-agents")!.addEventListener("click", () => add("agent"));
+  document.getElementById("add-skills")!.addEventListener("click", () => add("skill"));
+  for (const b of sourcesEl.querySelectorAll<HTMLButtonElement>(".src-rm")) {
+    b.addEventListener("click", async () => {
+      await removeScanDir(Number(b.dataset.id));
+      scanDirs = await listScanDirs();
+      renderSources();
     });
   }
 }
@@ -66,14 +123,13 @@ function renderList() {
   }
   listEl.replaceChildren(frag);
   emptyEl.hidden = allItems.length > 0;
-  statusEl.textContent = allItems.length
-    ? `${items.length} of ${allItems.length} items`
-    : "";
+  statusEl.textContent = allItems.length ? `${items.length} of ${allItems.length} items` : "";
 }
 
 async function load() {
-  allItems = await listItems();
-  renderSidebar();
+  [allItems, scanDirs] = await Promise.all([listItems(), listScanDirs()]);
+  renderFilters();
+  renderSources();
   renderList();
 }
 

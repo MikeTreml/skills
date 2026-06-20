@@ -44,9 +44,60 @@ fn unquote(s: &str) -> String {
     }
 }
 
+/// The first Markdown heading (`# Title`) outside the front matter, if any.
+pub fn first_heading(content: &str) -> Option<String> {
+    let trimmed = content.trim_start_matches('\u{feff}');
+    let mut in_fm = false;
+    for (i, line) in trimmed.lines().enumerate() {
+        let t = line.trim();
+        if i == 0 && t == "---" {
+            in_fm = true;
+            continue;
+        }
+        if in_fm {
+            if t == "---" {
+                in_fm = false;
+            }
+            continue;
+        }
+        if let Some(rest) = t.strip_prefix('#') {
+            let title = rest.trim_start_matches('#').trim();
+            if !title.is_empty() {
+                return Some(title.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Title precedence for items that are not named after themselves:
+/// front matter `name:` → first `# heading` → the provided fallback.
+pub fn title_from(content: &str, fallback: &str) -> String {
+    let name = parse_meta(content).name;
+    if !name.trim().is_empty() {
+        return name;
+    }
+    if let Some(h) = first_heading(content) {
+        return h;
+    }
+    fallback.to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn title_prefers_frontmatter_then_heading_then_fallback() {
+        assert_eq!(
+            title_from("---\nname: From FM\n---\n# Heading\n", "file"),
+            "From FM"
+        );
+        assert_eq!(title_from("# Heading Title\n\nbody", "file"), "Heading Title");
+        assert_eq!(title_from("just body, no name", "file"), "file");
+        // heading inside front matter is ignored
+        assert_eq!(title_from("---\ndescription: x\n---\n# Real\n", "file"), "Real");
+    }
 
     #[test]
     fn reads_name_and_description() {

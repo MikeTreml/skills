@@ -92,3 +92,12 @@ pub struct ImportSummary {
     pub placements_recorded: u32,
     pub variants_flagged: u32,
 }
+
+/// A user-added directory to scan, tagged as holding agents or skills.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScanDir {
+    pub id: i64,
+    pub path: String,
+    pub item_type: ItemType,
+    pub enabled: bool,
+}
