@@ -44,6 +44,7 @@ pub fn run() {
             commands::list_items,
             commands::list_locations,
             commands::run_import,
+            commands::get_item_content,
             commands::list_scan_dirs,
             commands::add_scan_dir,
             commands::remove_scan_dir,

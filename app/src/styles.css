@@ -130,7 +130,36 @@ body { overflow: hidden; }
   padding: 8px 16px;
   border-bottom: 1px solid var(--line);
 }
-.item:hover { background: rgba(127, 127, 127, 0.06); }
+.item:hover { background: rgba(127, 127, 127, 0.06); cursor: pointer; }
+.item.active { background: rgba(57, 108, 216, 0.14); }
+
+/* ---- detail / preview pane ---- */
+.detail {
+  width: 42%;
+  min-width: 320px;
+  max-width: 560px;
+  flex: none;
+  border-left: 1px solid var(--line);
+  background: var(--panel);
+  overflow-y: auto;
+  padding: 14px 16px;
+}
+.detail-head { display: flex; align-items: flex-start; gap: 8px; }
+.detail-title { flex: 1; font-size: 15px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.detail-desc { color: var(--muted); font-size: 13px; margin: 8px 0 4px; }
+.detail-path { font-size: 11px; color: var(--muted); word-break: break-all; margin-bottom: 10px; }
+.detail-body {
+  margin: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  font-family: "Cascadia Code", Consolas, ui-monospace, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
 .badge {
   flex: none;
   font-size: 10px;

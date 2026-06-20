@@ -1,5 +1,6 @@
 import {
   addScanDir,
+  getItemContent,
   listItems,
   listScanDirs,
   removeScanDir,
@@ -16,6 +17,7 @@ const listEl = document.getElementById("items")!;
 const filtersEl = document.getElementById("filters")!;
 const sourcesEl = document.getElementById("sources")!;
 const emptyEl = document.getElementById("empty") as HTMLParagraphElement;
+const detailEl = document.getElementById("detail") as HTMLElement;
 
 type Filter = "all" | "skill" | "agent";
 
@@ -23,6 +25,7 @@ let allItems: Item[] = [];
 let scanDirs: ScanDir[] = [];
 let activeFilter: Filter = "all";
 let query = "";
+let selectedId: number | null = null;
 
 function escapeHtml(s: string): string {
   const map: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" };
@@ -113,7 +116,8 @@ function renderList() {
   const frag = document.createDocumentFragment();
   for (const it of items) {
     const li = document.createElement("li");
-    li.className = "item";
+    li.className = it.id === selectedId ? "item active" : "item";
+    li.dataset.id = String(it.id);
     li.innerHTML =
       `<span class="badge ${it.item_type}">${it.item_type}</span>` +
       `<span class="name">${escapeHtml(it.name)}</span>` +
@@ -132,6 +136,41 @@ async function load() {
   renderSources();
   renderList();
 }
+
+function closeDetail() {
+  selectedId = null;
+  detailEl.hidden = true;
+  detailEl.innerHTML = "";
+  renderList();
+}
+
+async function openDetail(id: number) {
+  const it = allItems.find((i) => i.id === id);
+  if (!it) return;
+  selectedId = id;
+  renderList();
+  detailEl.hidden = false;
+  detailEl.innerHTML =
+    `<div class="detail-head">` +
+    `<div class="detail-title"><span class="badge ${it.item_type}">${it.item_type}</span>` +
+    `<b>${escapeHtml(it.name)}</b>${it.has_variants ? ` <span class="chip warn">⚠ variants</span>` : ""}</div>` +
+    `<button id="detail-close" class="src-rm" title="Close">✕</button></div>` +
+    (it.description ? `<p class="detail-desc">${escapeHtml(it.description)}</p>` : "") +
+    `<div class="detail-path" title="${escapeHtml(it.library_path)}">${escapeHtml(it.library_path)}</div>` +
+    `<pre class="detail-body">Loading…</pre>`;
+  document.getElementById("detail-close")!.addEventListener("click", closeDetail);
+  const body = detailEl.querySelector(".detail-body")!;
+  try {
+    body.textContent = await getItemContent(id);
+  } catch (e) {
+    body.textContent = `Error: ${e}`;
+  }
+}
+
+listEl.addEventListener("click", (e) => {
+  const li = (e.target as HTMLElement).closest("li.item") as HTMLElement | null;
+  if (li?.dataset.id) openDetail(Number(li.dataset.id));
+});
 
 searchEl.addEventListener("input", () => {
   query = searchEl.value;

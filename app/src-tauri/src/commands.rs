@@ -110,6 +110,25 @@ pub fn list_locations(state: State<AppState>) -> Result<Vec<Location>, String> {
     db::list_locations(&conn).map_err(|e| e.to_string())
 }
 
+/// Resolve the markdown to preview for a library path: the file itself if the
+/// path is a single file, otherwise the SKILL.md inside the folder.
+fn read_library_content(library_path: &str) -> std::io::Result<String> {
+    let p = Path::new(library_path);
+    let file = if p.is_file() {
+        p.to_path_buf()
+    } else {
+        p.join("SKILL.md")
+    };
+    std::fs::read_to_string(file)
+}
+
+#[tauri::command]
+pub fn get_item_content(state: State<AppState>, id: i64) -> Result<String, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let path = db::item_library_path(&conn, id).map_err(|e| e.to_string())?;
+    read_library_content(&path).map_err(|e| e.to_string())
+}
+
 fn scan_and_import_location(
     conn: &rusqlite::Connection,
     library_root: &Path,
@@ -238,6 +257,21 @@ mod tests {
         let cands = default_location_candidates(home.path());
         assert_eq!(cands.len(), 1);
         assert_eq!(cands[0].2, LocationKind::ClaudeSkills);
+    }
+
+    #[test]
+    fn read_library_content_handles_file_and_folder() {
+        let d = tempfile::tempdir().unwrap();
+        let folder = d.path().join("skillfolder");
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(folder.join("SKILL.md"), "FOLDER BODY").unwrap();
+        assert_eq!(
+            read_library_content(folder.to_str().unwrap()).unwrap(),
+            "FOLDER BODY"
+        );
+        let f = d.path().join("agent.md");
+        fs::write(&f, "FILE BODY").unwrap();
+        assert_eq!(read_library_content(f.to_str().unwrap()).unwrap(), "FILE BODY");
     }
 
     #[test]

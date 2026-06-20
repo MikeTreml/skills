@@ -32,6 +32,7 @@ export interface ScanDir {
 
 export const listItems = () => invoke<Item[]>("list_items");
 export const runImport = () => invoke<ImportSummary>("run_import");
+export const getItemContent = (id: number) => invoke<string>("get_item_content", { id });
 
 export const listScanDirs = () => invoke<ScanDir[]>("list_scan_dirs");
 export const addScanDir = (path: string, item_type: ItemType) =>

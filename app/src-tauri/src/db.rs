@@ -128,6 +128,14 @@ pub fn item_canonical_hash(conn: &Connection, item_id: i64) -> rusqlite::Result<
     )
 }
 
+pub fn item_library_path(conn: &Connection, item_id: i64) -> rusqlite::Result<String> {
+    conn.query_row(
+        "SELECT library_path FROM items WHERE id = ?1",
+        params![item_id],
+        |r| r.get(0),
+    )
+}
+
 pub fn upsert_placement(
     conn: &Connection,
     item_id: i64,
