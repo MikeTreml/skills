@@ -1,5 +1,5 @@
 use crate::model::{Item, ItemType, Location, LocationKind, ScanDir};
-use crate::{db, importer};
+use crate::{ai, db, importer};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tauri::State;
@@ -221,6 +221,56 @@ pub fn run_import(state: State<AppState>) -> Result<crate::model::ImportSummary,
         &state.home,
         state.tarball_path.as_deref(),
     )
+}
+
+#[derive(serde::Serialize)]
+pub struct ClassifySummary {
+    pub classified: u32,
+    pub total: u32,
+}
+
+/// Trim to None if empty (a free fn so the output borrow ties to the input).
+fn opt_str(s: &str) -> Option<&str> {
+    if s.trim().is_empty() {
+        None
+    } else {
+        Some(s)
+    }
+}
+
+#[tauri::command]
+pub fn ai_available() -> bool {
+    ai::api_key().is_some()
+}
+
+#[tauri::command]
+pub async fn classify_all(state: State<'_, AppState>) -> Result<ClassifySummary, String> {
+    let api_key = ai::api_key().ok_or("OPENAI_API_KEY is not set")?;
+    let todo = {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        db::unclassified_items(&conn).map_err(|e| e.to_string())?
+    };
+    let total = todo.len() as u32;
+    let client = reqwest::Client::new();
+    let mut classified = 0u32;
+    for chunk in todo.chunks(20) {
+        let results =
+            ai::classify_batch(&client, &api_key, chunk, crate::taxonomy::CANONICAL_VERBS).await?;
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        for (id, c) in &results {
+            db::set_classification(
+                &conn,
+                *id,
+                opt_str(&c.object),
+                opt_str(&c.sub_object),
+                opt_str(&c.verb),
+                opt_str(&c.qualifier),
+            )
+            .map_err(|e| e.to_string())?;
+            classified += 1;
+        }
+    }
+    Ok(ClassifySummary { classified, total })
 }
 
 #[tauri::command]

@@ -1,3 +1,4 @@
+mod ai;
 mod commands;
 pub mod db;
 pub mod dedup;
@@ -50,6 +51,8 @@ pub fn run() {
             commands::list_scan_dirs,
             commands::add_scan_dir,
             commands::remove_scan_dir,
+            commands::ai_available,
+            commands::classify_all,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

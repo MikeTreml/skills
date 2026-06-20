@@ -242,6 +242,15 @@ pub fn list_items(conn: &Connection) -> rusqlite::Result<Vec<Item>> {
     rows.collect()
 }
 
+/// Items not yet classified (object IS NULL), for the AI classifier. Returns (id, name, description).
+pub fn unclassified_items(conn: &Connection) -> rusqlite::Result<Vec<(i64, String, String)>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, name, description FROM items WHERE object IS NULL AND archived = 0 ORDER BY id",
+    )?;
+    let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+    rows.collect()
+}
+
 /// Store the canonical classification (Object / Sub / Verb / Qualifier) for an item.
 pub fn set_classification(
     conn: &Connection,
