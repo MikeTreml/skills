@@ -74,3 +74,18 @@ export const refineItem = (
 ) => invoke<RefineResult>("refine_item", { id, directives, toolsAdd, toolsRemove });
 export const applyRefinement = (id: number, content: string) =>
   invoke<void>("apply_refinement", { id, content });
+
+export interface MergeSource {
+  id: number;
+  name: string;
+}
+export interface MergeResult {
+  proposed: string;
+  sources: MergeSource[];
+}
+export const mergeItems = (ids: number[]) => invoke<MergeResult>("merge_items", { ids });
+export const saveMerge = (ids: number[], content: string, name: string, mode: string) =>
+  invoke<number>("save_merge", { ids, content, name, mode });
+export const archiveItem = (id: number, archived: boolean) =>
+  invoke<void>("archive_item", { id, archived });
+export const listArchived = () => invoke<Item[]>("list_archived");

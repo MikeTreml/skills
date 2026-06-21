@@ -249,6 +249,29 @@ body { overflow: hidden; }
 .rf-tool.remove { border-color: #cc5b50; color: #cc5b50; text-decoration: line-through; }
 .rf-tool.remove::before { content: "\2212 "; }
 .detail-body.dim { opacity: 0.6; }
+
+/* selection bar + multi-select */
+.selbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--line);
+  background: rgba(57, 108, 216, 0.08);
+  font-size: 12px;
+}
+.item .sel { flex: none; margin-right: 2px; }
+.restore {
+  flex: none;
+  font-size: 11px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: rgba(127, 127, 127, 0.08);
+  color: var(--fg);
+  cursor: pointer;
+  padding: 2px 8px;
+}
+.restore:hover { border-color: var(--accent); }
 .desc { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .empty { padding: 30px 16px; color: var(--muted); }
 

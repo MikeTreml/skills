@@ -173,6 +173,113 @@ pub fn apply_refinement(state: State<AppState>, id: i64, content: String) -> Res
     Ok(())
 }
 
+#[derive(serde::Serialize)]
+pub struct MergeSource {
+    pub id: i64,
+    pub name: String,
+}
+
+#[derive(serde::Serialize)]
+pub struct MergeResult {
+    pub proposed: String,
+    pub sources: Vec<MergeSource>,
+}
+
+#[tauri::command]
+pub async fn merge_items(state: State<'_, AppState>, ids: Vec<i64>) -> Result<MergeResult, String> {
+    let api_key = ai::api_key().ok_or("OPENAI_API_KEY is not set")?;
+    let metas: Vec<(i64, String, String)> = {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        let items = db::list_items(&conn).map_err(|e| e.to_string())?;
+        ids.iter()
+            .filter_map(|id| {
+                items
+                    .iter()
+                    .find(|i| i.id == *id)
+                    .map(|i| (i.id, i.name.clone(), i.library_path.clone()))
+            })
+            .collect()
+    };
+    if metas.len() < 2 {
+        return Err("Select at least two items to merge.".into());
+    }
+    let mut pairs = Vec::new();
+    let mut sources = Vec::new();
+    for (id, name, path) in &metas {
+        let content = read_library_content(path).map_err(|e| e.to_string())?;
+        pairs.push((name.clone(), content));
+        sources.push(MergeSource { id: *id, name: name.clone() });
+    }
+    let proposed = ai::merge(&reqwest::Client::new(), &api_key, &pairs).await?;
+    Ok(MergeResult { proposed, sources })
+}
+
+/// Save a merged file as a NEW library item. mode "replace" archives the sources.
+#[tauri::command]
+pub fn save_merge(
+    state: State<AppState>,
+    ids: Vec<i64>,
+    content: String,
+    name: String,
+    mode: String,
+) -> Result<i64, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let type_str = db::item_type(&conn, *ids.first().ok_or("no sources")?).map_err(|e| e.to_string())?;
+    let item_type = ItemType::parse(&type_str).unwrap_or(ItemType::Skill);
+    let slug = {
+        let s = crate::slug::slugify(&name);
+        if s.is_empty() {
+            "merged".to_string()
+        } else {
+            s
+        }
+    };
+    let base = state
+        .library_root
+        .join("_uncategorized")
+        .join(item_type.as_str())
+        .join(&slug);
+    let (file, library_path) = if item_type == ItemType::Agent {
+        (base.join(format!("{slug}.md")), base.join(format!("{slug}.md")))
+    } else {
+        (base.join("SKILL.md"), base.clone())
+    };
+    if let Some(parent) = file.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(&file, &content).map_err(|e| e.to_string())?;
+    let hash = crate::hash::hash_path(&library_path).map_err(|e| e.to_string())?;
+    let desc = crate::meta::parse_meta(&content).description;
+    let (id, _) = db::insert_item_if_absent(
+        &conn,
+        item_type,
+        &name,
+        &slug,
+        &desc,
+        &hash,
+        &library_path.to_string_lossy(),
+    )
+    .map_err(|e| e.to_string())?;
+    if mode == "replace" {
+        for sid in &ids {
+            db::set_archived(&conn, *sid, true).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(id)
+}
+
+#[tauri::command]
+pub fn archive_item(state: State<AppState>, id: i64, archived: bool) -> Result<(), String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    db::set_archived(&conn, id, archived).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn list_archived(state: State<AppState>) -> Result<Vec<Item>, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    db::list_archived(&conn).map_err(|e| e.to_string())
+}
+
 fn scan_and_import_location(
     conn: &rusqlite::Connection,
     library_root: &Path,

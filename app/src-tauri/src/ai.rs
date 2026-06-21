@@ -166,16 +166,8 @@ pub fn strip_code_fences(s: &str) -> String {
     t.to_string()
 }
 
-/// Refine one file; returns the improved Markdown.
-pub async fn refine(
-    client: &reqwest::Client,
-    api_key: &str,
-    content: &str,
-    directives: &[String],
-    tools_add: &[String],
-    tools_remove: &[String],
-) -> Result<String, String> {
-    let body = build_refine_request(content, directives, tools_add, tools_remove);
+/// POST a chat-completions body and return the message text (code fences stripped).
+async fn complete_text(client: &reqwest::Client, api_key: &str, body: Value) -> Result<String, String> {
     let resp = client
         .post("https://api.openai.com/v1/chat/completions")
         .bearer_auth(api_key)
@@ -192,6 +184,48 @@ pub async fn refine(
         .as_str()
         .ok_or("OpenAI response missing message content")?;
     Ok(strip_code_fences(out))
+}
+
+/// Refine one file; returns the improved Markdown.
+pub async fn refine(
+    client: &reqwest::Client,
+    api_key: &str,
+    content: &str,
+    directives: &[String],
+    tools_add: &[String],
+    tools_remove: &[String],
+) -> Result<String, String> {
+    let body = build_refine_request(content, directives, tools_add, tools_remove);
+    complete_text(client, api_key, body).await
+}
+
+/// Build the request that merges multiple (name, content) files into one.
+pub fn build_merge_request(items: &[(String, String)]) -> Value {
+    let mut user = String::new();
+    for (i, (name, content)) in items.iter().enumerate() {
+        user.push_str(&format!("\n=== SOURCE {} — {name} ===\n{content}\n", i + 1));
+    }
+    let system = "You merge multiple Claude Code skills/agents into ONE combined file. Union their \
+         capabilities, remove duplication, keep the clearest wording, and produce a single valid \
+         file (YAML frontmatter with name + description, then the Markdown body). Return ONLY the \
+         merged file content — no commentary and no code fences.";
+    json!({
+        "model": "gpt-4o-mini",
+        "temperature": 0.2,
+        "messages": [
+            { "role": "system", "content": system },
+            { "role": "user", "content": user }
+        ]
+    })
+}
+
+/// Merge multiple files into one; returns the merged Markdown.
+pub async fn merge(
+    client: &reqwest::Client,
+    api_key: &str,
+    items: &[(String, String)],
+) -> Result<String, String> {
+    complete_text(client, api_key, build_merge_request(items)).await
 }
 
 #[cfg(test)]
@@ -217,6 +251,17 @@ mod tests {
     fn strips_code_fences() {
         assert_eq!(strip_code_fences("```markdown\nhello\nworld\n```"), "hello\nworld");
         assert_eq!(strip_code_fences("no fence"), "no fence");
+    }
+
+    #[test]
+    fn merge_request_lists_all_sources() {
+        let b = build_merge_request(&[
+            ("Alpha".into(), "body A".into()),
+            ("Beta".into(), "body B".into()),
+        ]);
+        let user = b["messages"][1]["content"].as_str().unwrap();
+        assert!(user.contains("SOURCE 1 — Alpha") && user.contains("body A"));
+        assert!(user.contains("SOURCE 2 — Beta") && user.contains("body B"));
     }
 
     #[test]

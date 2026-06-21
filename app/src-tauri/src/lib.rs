@@ -59,6 +59,10 @@ pub fn run() {
             commands::remove_synonym,
             commands::refine_item,
             commands::apply_refinement,
+            commands::merge_items,
+            commands::save_merge,
+            commands::archive_item,
+            commands::list_archived,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

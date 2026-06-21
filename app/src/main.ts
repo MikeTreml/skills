@@ -3,19 +3,24 @@ import {
   addSynonym,
   aiAvailable,
   applyRefinement,
+  archiveItem,
   classifyAll,
   getItemContent,
+  listArchived,
   listDuplicates,
   listItems,
   listScanDirs,
   listVerbMap,
+  mergeItems,
   refineItem,
   removeScanDir,
   removeSynonym,
   runImport,
+  saveMerge,
   type DupGroup,
   type Item,
   type ItemType,
+  type MergeResult,
   type RefineResult,
   type ScanDir,
 } from "./api";
@@ -38,6 +43,7 @@ const searchEl = document.getElementById("search") as HTMLInputElement;
 const importBtn = document.getElementById("import") as HTMLButtonElement;
 const classifyBtn = document.getElementById("classify") as HTMLButtonElement;
 const statusEl = document.getElementById("status")!;
+const selbarEl = document.getElementById("selbar")!;
 const listEl = document.getElementById("items")!;
 const dupesEl = document.getElementById("dupes")!;
 const filtersEl = document.getElementById("filters")!;
@@ -47,29 +53,31 @@ const emptyEl = document.getElementById("empty") as HTMLParagraphElement;
 const detailEl = document.getElementById("detail") as HTMLElement;
 
 type TypeFilter = "all" | "skill" | "agent";
+type View = "library" | "duplicates" | "archived";
 
 let allItems: Item[] = [];
+let archivedItems: Item[] = [];
 let scanDirs: ScanDir[] = [];
 let dupGroups: DupGroup[] = [];
 let verbMap: [string, string][] = [];
 let aiOk = false;
-let view: "library" | "duplicates" = "library";
+let view: View = "library";
 let typeFilter: TypeFilter = "all";
-let objectFilter: string | null = null; // null=all, "__none__"=untriaged
+let objectFilter: string | null = null;
 let query = "";
 let selectedId: number | null = null;
+const selection = new Set<number>();
 
 const esc = (s: string) =>
   s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
 const itemById = (id: number) => allItems.find((i) => i.id === id);
 
-// ---------- sidebar: type filter + object tree + view toggle ----------
+// ---------- sidebar ----------
 function renderFilters() {
   const typeCount = (t: TypeFilter) =>
     t === "all" ? allItems.length : allItems.filter((i) => i.item_type === t).length;
   const typeBtn = (t: TypeFilter, label: string) =>
-    `<button class="nav${typeFilter === t ? " active" : ""}" data-type="${t}">` +
-    `<span>${label}</span><span class="count">${typeCount(t)}</span></button>`;
+    `<button class="nav${typeFilter === t ? " active" : ""}" data-type="${t}"><span>${label}</span><span class="count">${typeCount(t)}</span></button>`;
 
   const objects = new Map<string, number>();
   let untriaged = 0;
@@ -77,29 +85,26 @@ function renderFilters() {
     if (it.object) objects.set(it.object, (objects.get(it.object) ?? 0) + 1);
     else untriaged++;
   }
-  const sortedObjects = [...objects.entries()].sort((a, b) => b[1] - a[1]);
   const objBtn = (key: string | null, label: string, n: number) =>
-    `<button class="nav sub${objectFilter === key && view === "library" ? " active" : ""}" data-object="${key ?? ""}">` +
-    `<span>${esc(label)}</span><span class="count">${n}</span></button>`;
-
-  let objectTree = "";
-  if (sortedObjects.length || untriaged) {
-    objectTree =
+    `<button class="nav sub${objectFilter === key && view === "library" ? " active" : ""}" data-object="${key ?? ""}"><span>${esc(label)}</span><span class="count">${n}</span></button>`;
+  let tree: string;
+  if (objects.size || untriaged) {
+    tree =
       `<div class="nav-head">Objects</div>` +
       objBtn(null, "All objects", allItems.length) +
-      sortedObjects.map(([o, n]) => objBtn(o, o, n)).join("") +
+      [...objects.entries()].sort((a, b) => b[1] - a[1]).map(([o, n]) => objBtn(o, o, n)).join("") +
       (untriaged ? objBtn("__none__", "Untriaged", untriaged) : "");
   } else {
-    objectTree = `<div class="nav-note">Run <b>Classify</b> to group by Object.</div>`;
+    tree = `<div class="nav-note">Run <b>Classify</b> to group by Object.</div>`;
   }
+
+  const viewBtn = (v: View, label: string, n?: number) =>
+    `<button class="nav${view === v ? " active" : ""}" data-view="${v}"><span>${label}</span>${n !== undefined ? `<span class="count">${n}</span>` : ""}</button>`;
 
   filtersEl.innerHTML =
     `<div class="nav-group">${typeBtn("all", "All")}${typeBtn("skill", "Skills")}${typeBtn("agent", "Agents")}</div>` +
-    `<div class="nav-group">` +
-    `<button class="nav${view === "library" ? " active" : ""}" data-view="library"><span>Library</span></button>` +
-    `<button class="nav${view === "duplicates" ? " active" : ""}" data-view="duplicates"><span>Duplicates</span><span class="count">${dupGroups.length}</span></button>` +
-    `</div>` +
-    `<div class="nav-group">${objectTree}</div>`;
+    `<div class="nav-group">${viewBtn("library", "Library")}${viewBtn("duplicates", "Duplicates", dupGroups.length)}${viewBtn("archived", "Archived", archivedItems.length)}</div>` +
+    `<div class="nav-group">${tree}</div>`;
 
   for (const b of filtersEl.querySelectorAll<HTMLButtonElement>("[data-type]"))
     b.addEventListener("click", () => {
@@ -109,7 +114,7 @@ function renderFilters() {
     });
   for (const b of filtersEl.querySelectorAll<HTMLButtonElement>("[data-view]"))
     b.addEventListener("click", () => {
-      view = b.dataset.view as "library" | "duplicates";
+      view = b.dataset.view as View;
       renderFilters();
       renderMain();
     });
@@ -122,23 +127,17 @@ function renderFilters() {
     });
 }
 
-// ---------- sidebar: custom sources ----------
 function renderSources() {
   const rows = scanDirs
     .map(
       (d) =>
-        `<li class="src-item"><span class="badge ${d.item_type}">${d.item_type}</span>` +
-        `<span class="src-path" title="${esc(d.path)}">${esc(d.path)}</span>` +
-        `<button class="src-rm" data-id="${d.id}" title="Remove">✕</button></li>`,
+        `<li class="src-item"><span class="badge ${d.item_type}">${d.item_type}</span><span class="src-path" title="${esc(d.path)}">${esc(d.path)}</span><button class="src-rm" data-id="${d.id}" title="Remove">✕</button></li>`,
     )
     .join("");
   sourcesEl.innerHTML =
-    `<h3>Custom sources</h3>` +
-    `<input id="dir-input" class="dir-input" placeholder="C:\\path\\to\\folder" />` +
-    `<div class="add-row"><button id="add-agents" class="add-btn">+ Agents dir</button>` +
-    `<button id="add-skills" class="add-btn">+ Skills dir</button></div>` +
+    `<h3>Custom sources</h3><input id="dir-input" class="dir-input" placeholder="C:\\path\\to\\folder" />` +
+    `<div class="add-row"><button id="add-agents" class="add-btn">+ Agents dir</button><button id="add-skills" class="add-btn">+ Skills dir</button></div>` +
     `<ul class="src-list">${rows}</ul>`;
-
   const input = document.getElementById("dir-input") as HTMLInputElement;
   const add = async (t: ItemType) => {
     const path = input.value.trim();
@@ -163,7 +162,6 @@ function renderSources() {
     });
 }
 
-// ---------- sidebar: verb map editor ----------
 function renderVerbMap() {
   const byCanon = new Map<string, string[]>();
   for (const [canon, syn] of verbMap) {
@@ -175,20 +173,14 @@ function renderVerbMap() {
     .map(
       ([canon, syns]) =>
         `<div class="verb-row"><b>${esc(canon)}</b> ` +
-        syns
-          .map((s) => `<span class="vchip">${esc(s)}<button class="vrm" data-syn="${esc(s)}">✕</button></span>`)
-          .join(" ") +
+        syns.map((s) => `<span class="vchip">${esc(s)}<button class="vrm" data-syn="${esc(s)}">✕</button></span>`).join(" ") +
         `</div>`,
     )
     .join("");
   verbmapEl.innerHTML =
-    `<details><summary>Verb map (${verbMap.length})</summary>` +
-    `<div class="verb-list">${rows}</div>` +
-    `<div class="add-row"><input id="vc" class="dir-input" placeholder="Canonical" />` +
-    `<input id="vs" class="dir-input" placeholder="synonym" /></div>` +
-    `<div class="add-row"><button id="vadd" class="add-btn">+ Add synonym</button></div>` +
-    `</details>`;
-
+    `<details><summary>Verb map (${verbMap.length})</summary><div class="verb-list">${rows}</div>` +
+    `<div class="add-row"><input id="vc" class="dir-input" placeholder="Canonical" /><input id="vs" class="dir-input" placeholder="synonym" /></div>` +
+    `<div class="add-row"><button id="vadd" class="add-btn">+ Add synonym</button></div></details>`;
   document.getElementById("vadd")!.addEventListener("click", async () => {
     const c = (document.getElementById("vc") as HTMLInputElement).value.trim();
     const s = (document.getElementById("vs") as HTMLInputElement).value.trim();
@@ -205,7 +197,7 @@ function renderVerbMap() {
     });
 }
 
-// ---------- main content ----------
+// ---------- rows + content ----------
 function chips(it: Item): string {
   const c: string[] = [];
   if (it.object) c.push(`<span class="chip obj">${esc(it.object)}${it.sub_object ? " › " + esc(it.sub_object) : ""}</span>`);
@@ -215,12 +207,15 @@ function chips(it: Item): string {
   return c.join("");
 }
 
-function itemRow(it: Item): string {
+function itemRow(it: Item, opts: { select?: boolean; restore?: boolean } = {}): string {
+  const cb = opts.select
+    ? `<input type="checkbox" class="sel" data-id="${it.id}"${selection.has(it.id) ? " checked" : ""} />`
+    : "";
+  const restore = opts.restore ? `<button class="restore" data-id="${it.id}">Restore</button>` : "";
   return (
-    `<li class="item${it.id === selectedId ? " active" : ""}" data-id="${it.id}">` +
-    `<span class="badge ${it.item_type}">${it.item_type}</span>` +
-    `<span class="name">${esc(it.name)}</span>${chips(it)}` +
-    `<span class="desc">${esc(it.description)}</span></li>`
+    `<li class="item${it.id === selectedId ? " active" : ""}" data-id="${it.id}">${cb}` +
+    `<span class="badge ${it.item_type}">${it.item_type}</span><span class="name">${esc(it.name)}</span>${chips(it)}` +
+    `<span class="desc">${esc(it.description)}</span>${restore}</li>`
   );
 }
 
@@ -235,9 +230,33 @@ function visibleItems(): Item[] {
   });
 }
 
+function renderSelbar() {
+  const n = selection.size;
+  if (n === 0 || view !== "library") {
+    selbarEl.hidden = true;
+    selbarEl.innerHTML = "";
+    return;
+  }
+  selbarEl.hidden = false;
+  const dis = n < 2 ? " disabled" : "";
+  selbarEl.innerHTML =
+    `<span>${n} selected</span>` +
+    `<button id="mc" class="add-btn"${dis}>Merge → Create</button>` +
+    `<button id="mr" class="add-btn"${dis}>Merge → Replace</button>` +
+    `<button id="arch" class="add-btn">Archive</button>` +
+    `<button id="clr" class="add-btn">Clear</button>`;
+  document.getElementById("mc")!.addEventListener("click", () => startMerge("create"));
+  document.getElementById("mr")!.addEventListener("click", () => startMerge("replace"));
+  document.getElementById("arch")!.addEventListener("click", archiveSelected);
+  document.getElementById("clr")!.addEventListener("click", () => {
+    selection.clear();
+    renderMain();
+  });
+}
+
 function renderList() {
   const items = visibleItems();
-  listEl.innerHTML = items.map(itemRow).join("");
+  listEl.innerHTML = items.map((it) => itemRow(it, { select: true })).join("");
   emptyEl.hidden = allItems.length > 0;
   statusEl.textContent = allItems.length ? `${items.length} of ${allItems.length} items` : "";
 }
@@ -247,18 +266,17 @@ function renderDuplicates() {
     dupesEl.innerHTML = `<p class="empty">No duplicates yet — run <b>Classify</b> first.</p>`;
     return;
   }
-  const order = { exact: 0, near: 1 } as const;
-  const groups = [...dupGroups].sort((a, b) => order[a.kind] - order[b.kind]);
-  dupesEl.innerHTML = groups
+  const rank = { exact: 0, near: 1 } as const;
+  dupesEl.innerHTML = [...dupGroups]
+    .sort((a, b) => rank[a.kind] - rank[b.kind])
     .map((g) => {
       const members = g.item_ids
         .map(itemById)
         .filter((x): x is Item => !!x)
-        .map(itemRow)
+        .map((it) => itemRow(it, { select: true }))
         .join("");
       return (
-        `<div class="dup-group"><div class="dup-head"><span class="chip ${g.kind === "exact" ? "warn" : "verb"}">${g.kind}</span> ` +
-        `<b>${esc(g.key)}</b> <span class="count">${g.item_ids.length}</span></div>` +
+        `<div class="dup-group"><div class="dup-head"><span class="chip ${g.kind === "exact" ? "warn" : "verb"}">${g.kind}</span> <b>${esc(g.key)}</b> <span class="count">${g.item_ids.length}</span></div>` +
         `<ul class="items">${members}</ul></div>`
       );
     })
@@ -266,16 +284,25 @@ function renderDuplicates() {
   statusEl.textContent = `${dupGroups.length} duplicate/similar groups`;
 }
 
+function renderArchived() {
+  dupesEl.innerHTML = archivedItems.length
+    ? `<ul class="items">${archivedItems.map((it) => itemRow(it, { restore: true })).join("")}</ul>`
+    : `<p class="empty">No archived items.</p>`;
+  statusEl.textContent = `${archivedItems.length} archived`;
+}
+
 function renderMain() {
-  if (view === "duplicates") {
-    listEl.hidden = true;
-    dupesEl.hidden = false;
-    renderDuplicates();
-  } else {
+  if (view === "library") {
     dupesEl.hidden = true;
     listEl.hidden = false;
     renderList();
+  } else {
+    listEl.hidden = true;
+    dupesEl.hidden = false;
+    if (view === "duplicates") renderDuplicates();
+    else renderArchived();
   }
+  renderSelbar();
 }
 
 // ---------- detail / preview ----------
@@ -287,15 +314,15 @@ function closeDetail() {
 }
 
 async function openDetail(id: number) {
-  const it = itemById(id);
+  const it = itemById(id) ?? archivedItems.find((i) => i.id === id);
   if (!it) return;
   selectedId = id;
   renderMain();
   detailEl.hidden = false;
   detailEl.innerHTML =
-    `<div class="detail-head"><div class="detail-title">` +
-    `<span class="badge ${it.item_type}">${it.item_type}</span><b>${esc(it.name)}</b></div>` +
+    `<div class="detail-head"><div class="detail-title"><span class="badge ${it.item_type}">${it.item_type}</span><b>${esc(it.name)}</b></div>` +
     `<button id="detail-refine" class="rf-btn" title="Refactor & improve">✦</button>` +
+    `<button id="detail-archive" class="rf-btn" title="Archive">🗄</button>` +
     `<button id="detail-close" class="src-rm" title="Close">✕</button></div>` +
     `<div class="detail-chips">${chips(it)}</div>` +
     (it.description ? `<p class="detail-desc">${esc(it.description)}</p>` : "") +
@@ -303,6 +330,12 @@ async function openDetail(id: number) {
     `<pre class="detail-body">Loading…</pre>`;
   document.getElementById("detail-close")!.addEventListener("click", closeDetail);
   document.getElementById("detail-refine")!.addEventListener("click", () => openRefine(id));
+  document.getElementById("detail-archive")!.addEventListener("click", async () => {
+    await archiveItem(id, true);
+    closeDetail();
+    await load();
+    statusEl.textContent = "Archived.";
+  });
   const body = detailEl.querySelector(".detail-body")!;
   try {
     body.textContent = await getItemContent(id);
@@ -317,17 +350,12 @@ function openRefine(id: number) {
   if (!it) return;
   detailEl.hidden = false;
   detailEl.innerHTML =
-    `<div class="detail-head"><div class="detail-title"><b>Refactor: ${esc(it.name)}</b></div>` +
-    `<button id="rf-x" class="src-rm" title="Cancel">✕</button></div>` +
+    `<div class="detail-head"><div class="detail-title"><b>Refactor: ${esc(it.name)}</b></div><button id="rf-x" class="src-rm" title="Cancel">✕</button></div>` +
     `<div class="rf-head">Directives</div>` +
-    DIRECTIVES.map(
-      (d, i) =>
-        `<label class="rf-chk"><input type="checkbox" data-dir="${i}" /> ${esc(d.split(":")[0])}</label>`,
-    ).join("") +
+    DIRECTIVES.map((d, i) => `<label class="rf-chk"><input type="checkbox" data-dir="${i}" /> ${esc(d.split(":")[0])}</label>`).join("") +
     `<div class="rf-head">Tools — click to + add / − remove</div>` +
     `<div class="rf-tools">${TOOLS.map((t) => `<button class="rf-tool" data-tool="${t}" data-state="0">${t}</button>`).join("")}</div>` +
-    `<div class="add-row"><button id="rf-run" class="primary">✦ Run refine</button></div>` +
-    `<p id="rf-status" class="status"></p>`;
+    `<div class="add-row"><button id="rf-run" class="primary">✦ Run refine</button></div><p id="rf-status" class="status"></p>`;
   document.getElementById("rf-x")!.addEventListener("click", () => openDetail(id));
   for (const b of detailEl.querySelectorAll<HTMLButtonElement>(".rf-tool"))
     b.addEventListener("click", () => {
@@ -359,8 +387,7 @@ async function runRefine(id: number, name: string) {
   }
   rfStatus.textContent = "Refining…";
   try {
-    const res = await refineItem(id, dirs, toolsAdd, toolsRemove);
-    showRefineDiff(id, name, res);
+    showRefineDiff(id, name, await refineItem(id, dirs, toolsAdd, toolsRemove));
   } catch (e) {
     rfStatus.textContent = `Error: ${e}`;
   }
@@ -368,11 +395,8 @@ async function runRefine(id: number, name: string) {
 
 function showRefineDiff(id: number, name: string, res: RefineResult) {
   detailEl.innerHTML =
-    `<div class="detail-head"><div class="detail-title"><b>Refined: ${esc(name)}</b></div>` +
-    `<button id="rf-x2" class="src-rm" title="Discard">✕</button></div>` +
-    `<div class="add-row"><button id="rf-save" class="primary">Save (overwrite)</button>` +
-    `<button id="rf-back" class="add-btn">Back</button></div>` +
-    `<p id="rf-status" class="status"></p>` +
+    `<div class="detail-head"><div class="detail-title"><b>Refined: ${esc(name)}</b></div><button id="rf-x2" class="src-rm" title="Discard">✕</button></div>` +
+    `<div class="add-row"><button id="rf-save" class="primary">Save (overwrite)</button><button id="rf-back" class="add-btn">Back</button></div><p id="rf-status" class="status"></p>` +
     `<div class="rf-head">Proposed</div><pre class="detail-body">${esc(res.proposed)}</pre>` +
     `<div class="rf-head">Original</div><pre class="detail-body dim">${esc(res.original)}</pre>`;
   document.getElementById("rf-x2")!.addEventListener("click", () => openDetail(id));
@@ -389,20 +413,70 @@ function showRefineDiff(id: number, name: string, res: RefineResult) {
   });
 }
 
+// ---------- merge & archive ----------
+async function startMerge(mode: "create" | "replace") {
+  if (selection.size < 2) return;
+  if (!aiOk) {
+    statusEl.textContent = "Set a valid OPENAI_API_KEY (then restart) to merge.";
+    return;
+  }
+  const ids = [...selection];
+  statusEl.textContent = "Merging…";
+  try {
+    showMergeReview(ids, mode, await mergeItems(ids));
+  } catch (e) {
+    statusEl.textContent = `Error: ${e}`;
+  }
+}
+
+function showMergeReview(ids: number[], mode: "create" | "replace", res: MergeResult) {
+  detailEl.hidden = false;
+  detailEl.innerHTML =
+    `<div class="detail-head"><div class="detail-title"><b>Merge → ${mode}</b></div><button id="mg-x" class="src-rm" title="Discard">✕</button></div>` +
+    `<div class="detail-path">Sources: ${res.sources.map((s) => esc(s.name)).join(", ")}</div>` +
+    `<div class="add-row"><input id="mg-name" class="dir-input" value="${esc(res.sources[0]?.name ?? "merged")} (merged)" /></div>` +
+    `<div class="add-row"><button id="mg-save" class="primary">Save ${mode === "replace" ? "(archive sources)" : "as new"}</button></div><p id="mg-status" class="status"></p>` +
+    `<div class="rf-head">Proposed</div><pre class="detail-body">${esc(res.proposed)}</pre>`;
+  document.getElementById("mg-x")!.addEventListener("click", closeDetail);
+  document.getElementById("mg-save")!.addEventListener("click", async () => {
+    const name = (document.getElementById("mg-name") as HTMLInputElement).value.trim() || "merged";
+    try {
+      const newId = await saveMerge(ids, res.proposed, name, mode);
+      selection.clear();
+      await load();
+      openDetail(newId);
+      statusEl.textContent = mode === "replace" ? "Merged; sources archived." : "Merged into a new item.";
+    } catch (e) {
+      document.getElementById("mg-status")!.textContent = `Error: ${e}`;
+    }
+  });
+}
+
+async function archiveSelected() {
+  const ids = [...selection];
+  for (const id of ids) await archiveItem(id, true);
+  selection.clear();
+  await load();
+  statusEl.textContent = `Archived ${ids.length} item(s).`;
+}
+
 // ---------- load + events ----------
 async function load() {
-  const [items, dirs, ok, vmap, dups] = await Promise.all([
+  const [items, arch, dirs, ok, vmap, dups] = await Promise.all([
     listItems(),
+    listArchived(),
     listScanDirs(),
     aiAvailable(),
     listVerbMap(),
     listDuplicates(),
   ]);
   allItems = items;
+  archivedItems = arch;
   scanDirs = dirs;
   aiOk = ok;
   verbMap = vmap;
   dupGroups = dups;
+  for (const id of [...selection]) if (!allItems.some((i) => i.id === id)) selection.delete(id);
   classifyBtn.disabled = !aiOk;
   classifyBtn.title = aiOk ? "Classify with AI" : "Set OPENAI_API_KEY to enable";
   renderFilters();
@@ -411,17 +485,29 @@ async function load() {
   renderMain();
 }
 
-listEl.addEventListener("click", (e) => {
-  const li = (e.target as HTMLElement).closest("li.item") as HTMLElement | null;
+function onRowClick(e: Event) {
+  const t = e.target as HTMLElement;
+  if (t.classList.contains("sel")) {
+    const id = Number((t as HTMLInputElement).dataset.id);
+    if (selection.has(id)) selection.delete(id);
+    else selection.add(id);
+    renderSelbar();
+    return;
+  }
+  if (t.classList.contains("restore")) {
+    archiveItem(Number(t.dataset.id), false).then(load);
+    return;
+  }
+  const li = t.closest("li.item") as HTMLElement | null;
   if (li?.dataset.id) openDetail(Number(li.dataset.id));
-});
-dupesEl.addEventListener("click", (e) => {
-  const li = (e.target as HTMLElement).closest("li.item") as HTMLElement | null;
-  if (li?.dataset.id) openDetail(Number(li.dataset.id));
-});
+}
+listEl.addEventListener("click", onRowClick);
+dupesEl.addEventListener("click", onRowClick);
+
 searchEl.addEventListener("input", () => {
   query = searchEl.value;
   if (view !== "library") view = "library";
+  renderFilters();
   renderMain();
 });
 

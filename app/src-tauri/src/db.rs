@@ -221,13 +221,25 @@ pub fn upsert_placement(
 }
 
 pub fn list_items(conn: &Connection) -> rusqlite::Result<Vec<Item>> {
+    query_items(conn, 0)
+}
+
+pub fn list_archived(conn: &Connection) -> rusqlite::Result<Vec<Item>> {
+    query_items(conn, 1)
+}
+
+pub fn item_type(conn: &Connection, id: i64) -> rusqlite::Result<String> {
+    conn.query_row("SELECT item_type FROM items WHERE id = ?1", params![id], |r| r.get(0))
+}
+
+fn query_items(conn: &Connection, archived: i64) -> rusqlite::Result<Vec<Item>> {
     let mut stmt = conn.prepare(
         "SELECT id, item_type, name, slug, description, category, subcategory,
                 object, sub_object, verb, qualifier,
                 canonical_hash, library_path, has_variants, archived
-         FROM items WHERE archived = 0 ORDER BY name COLLATE NOCASE",
+         FROM items WHERE archived = ?1 ORDER BY name COLLATE NOCASE",
     )?;
-    let rows = stmt.query_map([], |r| {
+    let rows = stmt.query_map(params![archived], |r| {
         let type_str: String = r.get(1)?;
         Ok(Item {
             id: r.get(0)?,
