@@ -219,6 +219,36 @@ body { overflow: hidden; }
 .vrm:hover { color: #cc5b50; }
 .sources summary { cursor: pointer; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
 .detail-chips { display: flex; gap: 5px; flex-wrap: wrap; margin: 4px 0 8px; }
+
+/* refactor & improve panel */
+.rf-btn {
+  flex: none;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--accent);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  padding: 2px 8px;
+}
+.rf-btn:hover { border-color: var(--accent); }
+.rf-head { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin: 12px 0 6px; }
+.rf-chk { display: block; font-size: 13px; margin: 3px 0; cursor: pointer; }
+.rf-tools { display: flex; flex-wrap: wrap; gap: 5px; }
+.rf-tool {
+  font-size: 11px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  padding: 3px 8px;
+  cursor: pointer;
+}
+.rf-tool.add { border-color: #3fa45b; color: #3fa45b; }
+.rf-tool.add::before { content: "+ "; }
+.rf-tool.remove { border-color: #cc5b50; color: #cc5b50; text-decoration: line-through; }
+.rf-tool.remove::before { content: "\2212 "; }
+.detail-body.dim { opacity: 0.6; }
 .desc { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .empty { padding: 30px 16px; color: var(--muted); }
 

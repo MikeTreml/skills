@@ -191,6 +191,14 @@ pub fn item_library_path(conn: &Connection, item_id: i64) -> rusqlite::Result<St
     )
 }
 
+pub fn set_canonical_hash(conn: &Connection, item_id: i64, hash: &str) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE items SET canonical_hash=?2, updated_at=datetime('now') WHERE id=?1",
+        params![item_id, hash],
+    )?;
+    Ok(())
+}
+
 pub fn upsert_placement(
     conn: &Connection,
     item_id: i64,

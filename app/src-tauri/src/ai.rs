@@ -115,9 +115,109 @@ pub async fn classify_batch(
     parse_response(content)
 }
 
+/// Build the chat-completions request that refines one skill/agent file.
+pub fn build_refine_request(
+    content: &str,
+    directives: &[String],
+    tools_add: &[String],
+    tools_remove: &[String],
+) -> Value {
+    let mut instr = String::from(
+        "You improve a single Claude Code skill or agent Markdown file. Apply ONLY the directives \
+         below — do not change anything else. Directives:\n",
+    );
+    for d in directives {
+        instr.push_str(&format!("- {d}\n"));
+    }
+    if !tools_add.is_empty() {
+        instr.push_str(&format!(
+            "Add these tools to the frontmatter tool list (allowed-tools for skills, tools for agents): {}.\n",
+            tools_add.join(", ")
+        ));
+    }
+    if !tools_remove.is_empty() {
+        instr.push_str(&format!(
+            "Remove these tools from the frontmatter tool list: {}.\n",
+            tools_remove.join(", ")
+        ));
+    }
+    instr.push_str(
+        "Preserve the YAML frontmatter + Markdown structure and the required fields (name, \
+         description). Keep it valid. Return ONLY the complete improved file content — no \
+         commentary and no code fences.",
+    );
+    json!({
+        "model": "gpt-4o-mini",
+        "temperature": 0.2,
+        "messages": [
+            { "role": "system", "content": instr },
+            { "role": "user", "content": content }
+        ]
+    })
+}
+
+/// Strip a single wrapping ``` code fence if the model added one.
+pub fn strip_code_fences(s: &str) -> String {
+    let t = s.trim();
+    if let Some(rest) = t.strip_prefix("```") {
+        let after = rest.splitn(2, '\n').nth(1).unwrap_or("");
+        return after.strip_suffix("```").unwrap_or(after).trim_end().to_string();
+    }
+    t.to_string()
+}
+
+/// Refine one file; returns the improved Markdown.
+pub async fn refine(
+    client: &reqwest::Client,
+    api_key: &str,
+    content: &str,
+    directives: &[String],
+    tools_add: &[String],
+    tools_remove: &[String],
+) -> Result<String, String> {
+    let body = build_refine_request(content, directives, tools_add, tools_remove);
+    let resp = client
+        .post("https://api.openai.com/v1/chat/completions")
+        .bearer_auth(api_key)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        return Err(format!("OpenAI {status}: {}", resp.text().await.unwrap_or_default()));
+    }
+    let v: Value = resp.json().await.map_err(|e| e.to_string())?;
+    let out = v["choices"][0]["message"]["content"]
+        .as_str()
+        .ok_or("OpenAI response missing message content")?;
+    Ok(strip_code_fences(out))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn refine_request_includes_directives_and_tool_changes() {
+        let b = build_refine_request(
+            "---\nname: x\n---\nbody",
+            &["Generalize beyond one tool".to_string()],
+            &["WebSearch".to_string()],
+            &["Bash".to_string()],
+        );
+        let sys = b["messages"][0]["content"].as_str().unwrap();
+        assert!(sys.contains("Generalize beyond one tool"));
+        assert!(sys.contains("Add these tools") && sys.contains("WebSearch"));
+        assert!(sys.contains("Remove these tools") && sys.contains("Bash"));
+        assert_eq!(b["messages"][1]["content"], "---\nname: x\n---\nbody");
+    }
+
+    #[test]
+    fn strips_code_fences() {
+        assert_eq!(strip_code_fences("```markdown\nhello\nworld\n```"), "hello\nworld");
+        assert_eq!(strip_code_fences("no fence"), "no fence");
+    }
 
     #[test]
     fn request_body_has_model_and_json_format() {

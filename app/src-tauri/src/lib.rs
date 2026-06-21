@@ -57,6 +57,8 @@ pub fn run() {
             commands::list_verb_map,
             commands::add_synonym,
             commands::remove_synonym,
+            commands::refine_item,
+            commands::apply_refinement,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

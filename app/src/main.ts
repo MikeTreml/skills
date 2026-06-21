@@ -2,20 +2,37 @@ import {
   addScanDir,
   addSynonym,
   aiAvailable,
+  applyRefinement,
   classifyAll,
   getItemContent,
   listDuplicates,
   listItems,
   listScanDirs,
   listVerbMap,
+  refineItem,
   removeScanDir,
   removeSynonym,
   runImport,
   type DupGroup,
   type Item,
   type ItemType,
+  type RefineResult,
   type ScanDir,
 } from "./api";
+
+const DIRECTIVES = [
+  "Generalize: open it beyond a single tool or topic to broader options",
+  "Specialize: narrow and sharpen its focus",
+  "Tighten guardrails: add validation, error handling, and safety boundaries",
+  "Clarify the trigger/description so it activates at the right time",
+  "Add concrete examples",
+  "Tighten the prose; remove redundancy",
+  "Modernize: update to current best practices and APIs",
+];
+const TOOLS = [
+  "Read", "Write", "Edit", "NotebookEdit", "Glob", "Grep", "LSP", "Bash",
+  "PowerShell", "Monitor", "WebFetch", "WebSearch", "Agent", "Skill",
+];
 
 const searchEl = document.getElementById("search") as HTMLInputElement;
 const importBtn = document.getElementById("import") as HTMLButtonElement;
@@ -278,18 +295,98 @@ async function openDetail(id: number) {
   detailEl.innerHTML =
     `<div class="detail-head"><div class="detail-title">` +
     `<span class="badge ${it.item_type}">${it.item_type}</span><b>${esc(it.name)}</b></div>` +
+    `<button id="detail-refine" class="rf-btn" title="Refactor & improve">✦</button>` +
     `<button id="detail-close" class="src-rm" title="Close">✕</button></div>` +
     `<div class="detail-chips">${chips(it)}</div>` +
     (it.description ? `<p class="detail-desc">${esc(it.description)}</p>` : "") +
     `<div class="detail-path" title="${esc(it.library_path)}">${esc(it.library_path)}</div>` +
     `<pre class="detail-body">Loading…</pre>`;
   document.getElementById("detail-close")!.addEventListener("click", closeDetail);
+  document.getElementById("detail-refine")!.addEventListener("click", () => openRefine(id));
   const body = detailEl.querySelector(".detail-body")!;
   try {
     body.textContent = await getItemContent(id);
   } catch (e) {
     body.textContent = `Error: ${e}`;
   }
+}
+
+// ---------- refactor & improve ----------
+function openRefine(id: number) {
+  const it = itemById(id);
+  if (!it) return;
+  detailEl.hidden = false;
+  detailEl.innerHTML =
+    `<div class="detail-head"><div class="detail-title"><b>Refactor: ${esc(it.name)}</b></div>` +
+    `<button id="rf-x" class="src-rm" title="Cancel">✕</button></div>` +
+    `<div class="rf-head">Directives</div>` +
+    DIRECTIVES.map(
+      (d, i) =>
+        `<label class="rf-chk"><input type="checkbox" data-dir="${i}" /> ${esc(d.split(":")[0])}</label>`,
+    ).join("") +
+    `<div class="rf-head">Tools — click to + add / − remove</div>` +
+    `<div class="rf-tools">${TOOLS.map((t) => `<button class="rf-tool" data-tool="${t}" data-state="0">${t}</button>`).join("")}</div>` +
+    `<div class="add-row"><button id="rf-run" class="primary">✦ Run refine</button></div>` +
+    `<p id="rf-status" class="status"></p>`;
+  document.getElementById("rf-x")!.addEventListener("click", () => openDetail(id));
+  for (const b of detailEl.querySelectorAll<HTMLButtonElement>(".rf-tool"))
+    b.addEventListener("click", () => {
+      const s = (Number(b.dataset.state) + 1) % 3;
+      b.dataset.state = String(s);
+      b.className = "rf-tool" + (s === 1 ? " add" : s === 2 ? " remove" : "");
+    });
+  document.getElementById("rf-run")!.addEventListener("click", () => runRefine(id, it.name));
+}
+
+async function runRefine(id: number, name: string) {
+  const rfStatus = document.getElementById("rf-status")!;
+  if (!aiOk) {
+    rfStatus.textContent = "Set a valid OPENAI_API_KEY (then restart) to refine.";
+    return;
+  }
+  const dirs: string[] = [];
+  for (const c of detailEl.querySelectorAll<HTMLInputElement>("input[data-dir]"))
+    if (c.checked) dirs.push(DIRECTIVES[Number(c.dataset.dir)]);
+  const toolsAdd: string[] = [];
+  const toolsRemove: string[] = [];
+  for (const b of detailEl.querySelectorAll<HTMLButtonElement>(".rf-tool")) {
+    if (b.dataset.state === "1") toolsAdd.push(b.dataset.tool!);
+    else if (b.dataset.state === "2") toolsRemove.push(b.dataset.tool!);
+  }
+  if (!dirs.length && !toolsAdd.length && !toolsRemove.length) {
+    rfStatus.textContent = "Pick at least one directive or tool change.";
+    return;
+  }
+  rfStatus.textContent = "Refining…";
+  try {
+    const res = await refineItem(id, dirs, toolsAdd, toolsRemove);
+    showRefineDiff(id, name, res);
+  } catch (e) {
+    rfStatus.textContent = `Error: ${e}`;
+  }
+}
+
+function showRefineDiff(id: number, name: string, res: RefineResult) {
+  detailEl.innerHTML =
+    `<div class="detail-head"><div class="detail-title"><b>Refined: ${esc(name)}</b></div>` +
+    `<button id="rf-x2" class="src-rm" title="Discard">✕</button></div>` +
+    `<div class="add-row"><button id="rf-save" class="primary">Save (overwrite)</button>` +
+    `<button id="rf-back" class="add-btn">Back</button></div>` +
+    `<p id="rf-status" class="status"></p>` +
+    `<div class="rf-head">Proposed</div><pre class="detail-body">${esc(res.proposed)}</pre>` +
+    `<div class="rf-head">Original</div><pre class="detail-body dim">${esc(res.original)}</pre>`;
+  document.getElementById("rf-x2")!.addEventListener("click", () => openDetail(id));
+  document.getElementById("rf-back")!.addEventListener("click", () => openRefine(id));
+  document.getElementById("rf-save")!.addEventListener("click", async () => {
+    try {
+      await applyRefinement(id, res.proposed);
+      await load();
+      openDetail(id);
+      statusEl.textContent = "Refinement saved (original backed up).";
+    } catch (e) {
+      document.getElementById("rf-status")!.textContent = `Error: ${e}`;
+    }
+  });
 }
 
 // ---------- load + events ----------

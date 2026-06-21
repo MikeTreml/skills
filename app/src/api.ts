@@ -59,5 +59,18 @@ export const removeSynonym = (synonym: string) => invoke<void>("remove_synonym",
 
 export const listScanDirs = () => invoke<ScanDir[]>("list_scan_dirs");
 export const addScanDir = (path: string, item_type: ItemType) =>
-  invoke<void>("add_scan_dir", { path, item_type });
+  invoke<void>("add_scan_dir", { path, itemType: item_type }); // Tauri maps camelCase → snake_case
 export const removeScanDir = (id: number) => invoke<void>("remove_scan_dir", { id });
+
+export interface RefineResult {
+  original: string;
+  proposed: string;
+}
+export const refineItem = (
+  id: number,
+  directives: string[],
+  toolsAdd: string[],
+  toolsRemove: string[],
+) => invoke<RefineResult>("refine_item", { id, directives, toolsAdd, toolsRemove });
+export const applyRefinement = (id: number, content: string) =>
+  invoke<void>("apply_refinement", { id, content });

@@ -110,16 +110,18 @@ pub fn list_locations(state: State<AppState>) -> Result<Vec<Location>, String> {
     db::list_locations(&conn).map_err(|e| e.to_string())
 }
 
-/// Resolve the markdown to preview for a library path: the file itself if the
-/// path is a single file, otherwise the SKILL.md inside the folder.
-fn read_library_content(library_path: &str) -> std::io::Result<String> {
+/// The file to read/write for a library path: the file itself, or SKILL.md inside a folder.
+fn library_file(library_path: &str) -> PathBuf {
     let p = Path::new(library_path);
-    let file = if p.is_file() {
+    if p.is_file() {
         p.to_path_buf()
     } else {
         p.join("SKILL.md")
-    };
-    std::fs::read_to_string(file)
+    }
+}
+
+fn read_library_content(library_path: &str) -> std::io::Result<String> {
+    std::fs::read_to_string(library_file(library_path))
 }
 
 #[tauri::command]
@@ -127,6 +129,48 @@ pub fn get_item_content(state: State<AppState>, id: i64) -> Result<String, Strin
     let conn = state.db.lock().map_err(|e| e.to_string())?;
     let path = db::item_library_path(&conn, id).map_err(|e| e.to_string())?;
     read_library_content(&path).map_err(|e| e.to_string())
+}
+
+#[derive(serde::Serialize)]
+pub struct RefineResult {
+    pub original: String,
+    pub proposed: String,
+}
+
+#[tauri::command]
+pub async fn refine_item(
+    state: State<'_, AppState>,
+    id: i64,
+    directives: Vec<String>,
+    tools_add: Vec<String>,
+    tools_remove: Vec<String>,
+) -> Result<RefineResult, String> {
+    let api_key = ai::api_key().ok_or("OPENAI_API_KEY is not set")?;
+    let path = {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        db::item_library_path(&conn, id).map_err(|e| e.to_string())?
+    };
+    let original = read_library_content(&path).map_err(|e| e.to_string())?;
+    let client = reqwest::Client::new();
+    let proposed = ai::refine(&client, &api_key, &original, &directives, &tools_add, &tools_remove).await?;
+    Ok(RefineResult { original, proposed })
+}
+
+#[tauri::command]
+pub fn apply_refinement(state: State<AppState>, id: i64, content: String) -> Result<(), String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let path = db::item_library_path(&conn, id).map_err(|e| e.to_string())?;
+    let file = library_file(&path);
+    // Back up the current content (outside the item folder, so it doesn't affect the hash).
+    let backups = state.library_root.join("_refine_backups");
+    std::fs::create_dir_all(&backups).map_err(|e| e.to_string())?;
+    if let Ok(prev) = std::fs::read(&file) {
+        let _ = std::fs::write(backups.join(format!("{id}.bak")), prev);
+    }
+    std::fs::write(&file, &content).map_err(|e| e.to_string())?;
+    let new_hash = crate::hash::hash_path(Path::new(&path)).map_err(|e| e.to_string())?;
+    db::set_canonical_hash(&conn, id, &new_hash).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 fn scan_and_import_location(
