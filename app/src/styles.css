@@ -175,12 +175,50 @@ body { overflow: hidden; }
 .name { font-weight: 600; white-space: nowrap; }
 .chip {
   flex: none;
-  font-size: 11px;
+  font-size: 10px;
   padding: 1px 7px;
   border-radius: 999px;
-  border: 1px solid var(--warn);
-  color: var(--warn);
+  border: 1px solid var(--muted);
+  color: var(--muted);
+  white-space: nowrap;
 }
+.chip.warn { border-color: var(--warn); color: var(--warn); }
+.chip.obj { border-color: var(--accent); color: var(--accent); }
+.chip.verb { border-color: var(--skill); color: var(--skill); }
+.chip.qual { border-color: var(--agent); color: var(--agent); }
+
+/* secondary top-bar button */
+.secondary {
+  padding: 7px 12px;
+  font-size: 13px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--panel);
+  color: var(--fg);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.secondary:disabled { opacity: 0.5; cursor: default; }
+
+/* sidebar object tree */
+.nav-head { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin: 6px 0 4px 6px; }
+.nav.sub { padding-left: 18px; }
+.nav-group + .nav-group { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 10px; }
+
+/* duplicates view */
+.dupes { padding: 8px 0; }
+.dup-group { border-bottom: 1px solid var(--line); padding-bottom: 6px; margin-bottom: 6px; }
+.dup-head { display: flex; align-items: center; gap: 8px; padding: 8px 16px 2px; }
+.dup-head .count { color: var(--muted); font-size: 12px; }
+
+/* verb map editor */
+.verb-list { max-height: 200px; overflow-y: auto; margin: 8px 0; }
+.verb-row { font-size: 12px; margin-bottom: 4px; line-height: 1.7; }
+.vchip { font-size: 11px; border: 1px solid var(--line); border-radius: 999px; padding: 1px 4px 1px 7px; white-space: nowrap; }
+.vrm { border: none; background: transparent; color: var(--muted); cursor: pointer; font-size: 11px; padding: 0 2px; }
+.vrm:hover { color: #cc5b50; }
+.sources summary { cursor: pointer; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
+.detail-chips { display: flex; gap: 5px; flex-wrap: wrap; margin: 4px 0 8px; }
 .desc { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .empty { padding: 30px 16px; color: var(--muted); }
 

@@ -53,6 +53,10 @@ pub fn run() {
             commands::remove_scan_dir,
             commands::ai_available,
             commands::classify_all,
+            commands::list_duplicates,
+            commands::list_verb_map,
+            commands::add_synonym,
+            commands::remove_synonym,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -295,6 +295,31 @@ pub fn remove_scan_dir(state: State<AppState>, id: i64) -> Result<(), String> {
     db::remove_scan_dir(&conn, id).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+pub fn list_duplicates(state: State<AppState>) -> Result<Vec<crate::dedup::DupGroup>, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let items = db::list_items(&conn).map_err(|e| e.to_string())?;
+    Ok(crate::dedup::group_duplicates(&items))
+}
+
+#[tauri::command]
+pub fn list_verb_map(state: State<AppState>) -> Result<Vec<(String, String)>, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    db::list_verb_map(&conn).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn add_synonym(state: State<AppState>, canonical: String, synonym: String) -> Result<(), String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    db::add_synonym(&conn, &canonical, &synonym).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn remove_synonym(state: State<AppState>, synonym: String) -> Result<(), String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    db::remove_synonym(&conn, &synonym).map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

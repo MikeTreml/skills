@@ -39,6 +39,24 @@ export const listItems = () => invoke<Item[]>("list_items");
 export const runImport = () => invoke<ImportSummary>("run_import");
 export const getItemContent = (id: number) => invoke<string>("get_item_content", { id });
 
+export interface DupGroup {
+  key: string;
+  kind: "exact" | "near";
+  item_ids: number[];
+}
+export interface ClassifySummary {
+  classified: number;
+  total: number;
+}
+
+export const aiAvailable = () => invoke<boolean>("ai_available");
+export const classifyAll = () => invoke<ClassifySummary>("classify_all");
+export const listDuplicates = () => invoke<DupGroup[]>("list_duplicates");
+export const listVerbMap = () => invoke<[string, string][]>("list_verb_map");
+export const addSynonym = (canonical: string, synonym: string) =>
+  invoke<void>("add_synonym", { canonical, synonym });
+export const removeSynonym = (synonym: string) => invoke<void>("remove_synonym", { synonym });
+
 export const listScanDirs = () => invoke<ScanDir[]>("list_scan_dirs");
 export const addScanDir = (path: string, item_type: ItemType) =>
   invoke<void>("add_scan_dir", { path, item_type });

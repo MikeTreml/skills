@@ -13,15 +13,18 @@
         <h1>Skill &amp; Agent Library</h1>
         <input id="search" class="search" type="search" placeholder="Search skills &amp; agents…" />
         <span id="status" class="status"></span>
+        <button id="classify" class="secondary">✦ Classify</button>
         <button id="import" class="primary">⟳ Scan &amp; import</button>
       </header>
       <div class="layout">
         <nav class="sidebar">
           <div id="filters"></div>
           <section id="sources" class="sources"></section>
+          <section id="verbmap" class="sources"></section>
         </nav>
         <main class="content">
           <ul id="items" class="items"></ul>
+          <div id="dupes" class="dupes" hidden></div>
           <p id="empty" class="empty" hidden>Nothing here yet — click <b>Scan &amp; import</b>.</p>
         </main>
         <aside id="detail" class="detail" hidden></aside>
