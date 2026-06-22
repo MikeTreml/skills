@@ -380,6 +380,12 @@ pub struct ClassifySummary {
     pub total: u32,
 }
 
+#[derive(serde::Serialize, Clone)]
+pub struct ClassifyProgress {
+    pub done: u32,
+    pub total: u32,
+}
+
 /// Trim to None if empty (a free fn so the output borrow ties to the input).
 fn opt_str(s: &str) -> Option<&str> {
     if s.trim().is_empty() {
@@ -394,12 +400,32 @@ pub fn ai_available() -> bool {
     ai::api_key().is_some()
 }
 
+/// Classify items. `ids = None` → all unclassified; `Some(list)` → exactly those.
+/// Emits a `classify-progress` event after each batch.
 #[tauri::command]
-pub async fn classify_all(state: State<'_, AppState>) -> Result<ClassifySummary, String> {
+pub async fn classify_all(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    ids: Option<Vec<i64>>,
+) -> Result<ClassifySummary, String> {
+    use tauri::Emitter;
     let api_key = ai::api_key().ok_or("OPENAI_API_KEY is not set")?;
-    let todo = {
+    let todo: Vec<(i64, String, String)> = {
         let conn = state.db.lock().map_err(|e| e.to_string())?;
-        db::unclassified_items(&conn).map_err(|e| e.to_string())?
+        match &ids {
+            Some(list) => {
+                let items = db::list_items(&conn).map_err(|e| e.to_string())?;
+                list.iter()
+                    .filter_map(|id| {
+                        items
+                            .iter()
+                            .find(|i| i.id == *id)
+                            .map(|i| (i.id, i.name.clone(), i.description.clone()))
+                    })
+                    .collect()
+            }
+            None => db::unclassified_items(&conn).map_err(|e| e.to_string())?,
+        }
     };
     let total = todo.len() as u32;
     let client = reqwest::Client::new();
@@ -407,19 +433,22 @@ pub async fn classify_all(state: State<'_, AppState>) -> Result<ClassifySummary,
     for chunk in todo.chunks(20) {
         let results =
             ai::classify_batch(&client, &api_key, chunk, crate::taxonomy::CANONICAL_VERBS).await?;
-        let conn = state.db.lock().map_err(|e| e.to_string())?;
-        for (id, c) in &results {
-            db::set_classification(
-                &conn,
-                *id,
-                opt_str(&c.object),
-                opt_str(&c.sub_object),
-                opt_str(&c.verb),
-                opt_str(&c.qualifier),
-            )
-            .map_err(|e| e.to_string())?;
-            classified += 1;
+        {
+            let conn = state.db.lock().map_err(|e| e.to_string())?;
+            for (id, c) in &results {
+                db::set_classification(
+                    &conn,
+                    *id,
+                    opt_str(&c.object),
+                    opt_str(&c.sub_object),
+                    opt_str(&c.verb),
+                    opt_str(&c.qualifier),
+                )
+                .map_err(|e| e.to_string())?;
+                classified += 1;
+            }
         }
+        let _ = app.emit("classify-progress", ClassifyProgress { done: classified, total });
     }
     Ok(ClassifySummary { classified, total })
 }

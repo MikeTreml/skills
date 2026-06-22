@@ -50,7 +50,8 @@ export interface ClassifySummary {
 }
 
 export const aiAvailable = () => invoke<boolean>("ai_available");
-export const classifyAll = () => invoke<ClassifySummary>("classify_all");
+export const classifyAll = (ids?: number[]) =>
+  invoke<ClassifySummary>("classify_all", { ids: ids ?? null });
 export const listDuplicates = () => invoke<DupGroup[]>("list_duplicates");
 export const listVerbMap = () => invoke<[string, string][]>("list_verb_map");
 export const addSynonym = (canonical: string, synonym: string) =>

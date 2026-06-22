@@ -24,6 +24,7 @@ import {
   type RefineResult,
   type ScanDir,
 } from "./api";
+import { listen } from "@tauri-apps/api/event";
 
 const DIRECTIVES = [
   "Generalize: open it beyond a single tool or topic to broader options",
@@ -243,10 +244,12 @@ function renderSelbar() {
     `<span>${n} selected</span>` +
     `<button id="mc" class="add-btn"${dis}>Merge → Create</button>` +
     `<button id="mr" class="add-btn"${dis}>Merge → Replace</button>` +
+    `<button id="clsel" class="add-btn">Classify</button>` +
     `<button id="arch" class="add-btn">Archive</button>` +
     `<button id="clr" class="add-btn">Clear</button>`;
   document.getElementById("mc")!.addEventListener("click", () => startMerge("create"));
   document.getElementById("mr")!.addEventListener("click", () => startMerge("replace"));
+  document.getElementById("clsel")!.addEventListener("click", classifySelected);
   document.getElementById("arch")!.addEventListener("click", archiveSelected);
   document.getElementById("clr")!.addEventListener("click", () => {
     selection.clear();
@@ -460,6 +463,24 @@ async function archiveSelected() {
   statusEl.textContent = `Archived ${ids.length} item(s).`;
 }
 
+async function classifySelected() {
+  if (!aiOk) {
+    statusEl.textContent = "Set a valid OPENAI_API_KEY (then restart) to classify.";
+    return;
+  }
+  const ids = [...selection];
+  if (!ids.length) return;
+  statusEl.textContent = `Classifying ${ids.length} selected…`;
+  try {
+    const s = await classifyAll(ids);
+    selection.clear();
+    await load();
+    statusEl.textContent = `Classified ${s.classified} selected`;
+  } catch (e) {
+    statusEl.textContent = `Error: ${e}`;
+  }
+}
+
 // ---------- load + events ----------
 async function load() {
   const [items, arch, dirs, ok, vmap, dups] = await Promise.all([
@@ -541,6 +562,10 @@ classifyBtn.addEventListener("click", async () => {
   } finally {
     classifyBtn.disabled = false;
   }
+});
+
+listen<{ done: number; total: number }>("classify-progress", (e) => {
+  statusEl.textContent = `Classifying… ${e.payload.done}/${e.payload.total}`;
 });
 
 window.addEventListener("error", (ev) => {
