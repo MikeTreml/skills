@@ -543,4 +543,13 @@ classifyBtn.addEventListener("click", async () => {
   }
 });
 
-load().catch((e) => (statusEl.textContent = `Error: ${e}`));
+window.addEventListener("error", (ev) => {
+  statusEl.textContent = `JS error: ${ev.message}`;
+});
+window.addEventListener("unhandledrejection", (ev) => {
+  statusEl.textContent = `Promise error: ${ev.reason}`;
+});
+load().catch((e) => {
+  statusEl.textContent = `Load error: ${e}`;
+  listEl.innerHTML = `<li class="item">⚠ Load failed: ${esc(String(e))}</li>`;
+});
