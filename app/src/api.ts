@@ -57,6 +57,7 @@ export const listVerbMap = () => invoke<[string, string][]>("list_verb_map");
 export const addSynonym = (canonical: string, synonym: string) =>
   invoke<void>("add_synonym", { canonical, synonym });
 export const removeSynonym = (synonym: string) => invoke<void>("remove_synonym", { synonym });
+export const renormalizeVerbs = () => invoke<number>("renormalize_verbs");
 
 export const listScanDirs = () => invoke<ScanDir[]>("list_scan_dirs");
 export const addScanDir = (path: string, item_type: ItemType) =>

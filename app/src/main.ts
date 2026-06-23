@@ -20,6 +20,7 @@ import {
   refineItem,
   removeScanDir,
   removeSynonym,
+  renormalizeVerbs,
   runImport,
   saveMerge,
   type DupGroup,
@@ -192,7 +193,8 @@ function renderVerbMap() {
   verbmapEl.innerHTML =
     `<details><summary>Verb map (${verbMap.length})</summary><div class="verb-list">${rows}</div>` +
     `<div class="add-row"><input id="vc" class="dir-input" placeholder="Canonical" /><input id="vs" class="dir-input" placeholder="synonym" /></div>` +
-    `<div class="add-row"><button id="vadd" class="add-btn">+ Add synonym</button></div></details>`;
+    `<div class="add-row"><button id="vadd" class="add-btn">+ Add synonym</button>` +
+    `<button id="vrenorm" class="add-btn" title="Re-map existing items through this verb map">Re-normalize items</button></div></details>`;
   document.getElementById("vadd")!.addEventListener("click", async () => {
     const c = (document.getElementById("vc") as HTMLInputElement).value.trim();
     const s = (document.getElementById("vs") as HTMLInputElement).value.trim();
@@ -200,6 +202,15 @@ function renderVerbMap() {
     await addSynonym(c, s);
     verbMap = await listVerbMap();
     renderVerbMap();
+  });
+  document.getElementById("vrenorm")!.addEventListener("click", async () => {
+    try {
+      const n = await renormalizeVerbs();
+      await load();
+      statusEl.textContent = `Re-normalized ${n} item verb(s) through the verb map.`;
+    } catch (e) {
+      statusEl.textContent = `Error: ${e}`;
+    }
   });
   for (const b of verbmapEl.querySelectorAll<HTMLButtonElement>(".vrm"))
     b.addEventListener("click", async () => {

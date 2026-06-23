@@ -358,6 +358,28 @@ pub fn remove_synonym(conn: &Connection, synonym: &str) -> rusqlite::Result<()> 
     Ok(())
 }
 
+/// Lowercased synonym → canonical verb, from the editable verb map.
+pub fn verb_lookup(conn: &Connection) -> rusqlite::Result<std::collections::HashMap<String, String>> {
+    let mut stmt = conn.prepare("SELECT synonym, canonical FROM verb_map")?;
+    let rows = stmt.query_map([], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+    })?;
+    let mut map = std::collections::HashMap::new();
+    for row in rows {
+        let (syn, canon) = row?;
+        map.insert(syn.to_ascii_lowercase(), canon);
+    }
+    Ok(map)
+}
+
+pub fn set_verb(conn: &Connection, item_id: i64, verb: &str) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE items SET verb=?2, updated_at=datetime('now') WHERE id=?1",
+        params![item_id, verb],
+    )?;
+    Ok(())
+}
+
 pub fn list_locations(conn: &Connection) -> rusqlite::Result<Vec<Location>> {
     let mut stmt =
         conn.prepare("SELECT id, label, root_path, kind, enabled FROM locations ORDER BY id")?;
@@ -550,5 +572,18 @@ mod tests {
             .query_row("SELECT status FROM placements WHERE id=?1", [pid], |r| r.get(0))
             .unwrap();
         assert_eq!(status, "drifted");
+    }
+
+    #[test]
+    fn verb_lookup_and_set_verb() {
+        let c = open_in_memory().unwrap();
+        add_synonym(&c, "Create", "Fabricate").unwrap();
+        let m = verb_lookup(&c).unwrap();
+        assert_eq!(m.get("fabricate").map(String::as_str), Some("Create"));
+        assert_eq!(m.get("generate").map(String::as_str), Some("Create")); // seeded
+        let (id, _) =
+            insert_item_if_absent(&c, ItemType::Skill, "x", "x", "d", "h", "lib/x").unwrap();
+        set_verb(&c, id, "Create").unwrap();
+        assert_eq!(list_items(&c).unwrap()[0].verb.as_deref(), Some("Create"));
     }
 }

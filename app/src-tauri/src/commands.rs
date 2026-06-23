@@ -549,9 +549,10 @@ pub async fn classify_all(
 ) -> Result<ClassifySummary, String> {
     use tauri::Emitter;
     let api_key = ai::api_key().ok_or("OPENAI_API_KEY is not set")?;
-    let todo: Vec<(i64, String, String)> = {
+    // Scope the guard to this block so it is dropped before the await loop (not Send).
+    let (todo, verb_map): (Vec<(i64, String, String)>, std::collections::HashMap<String, String>) = {
         let conn = state.db.lock().map_err(|e| e.to_string())?;
-        match &ids {
+        let todo = match &ids {
             Some(list) => {
                 let items = db::list_items(&conn).map_err(|e| e.to_string())?;
                 list.iter()
@@ -564,7 +565,10 @@ pub async fn classify_all(
                     .collect()
             }
             None => db::unclassified_items(&conn).map_err(|e| e.to_string())?,
-        }
+        };
+        // The editable verb map overrides the model's verb (so verb-map edits take effect).
+        let verb_map = db::verb_lookup(&conn).map_err(|e| e.to_string())?;
+        (todo, verb_map)
     };
     let total = todo.len() as u32;
     let client = reqwest::Client::new();
@@ -575,12 +579,16 @@ pub async fn classify_all(
         {
             let conn = state.db.lock().map_err(|e| e.to_string())?;
             for (id, c) in &results {
+                let verb = verb_map
+                    .get(&c.verb.to_ascii_lowercase())
+                    .cloned()
+                    .unwrap_or_else(|| c.verb.clone());
                 db::set_classification(
                     &conn,
                     *id,
                     opt_str(&c.object),
                     opt_str(&c.sub_object),
-                    opt_str(&c.verb),
+                    opt_str(&verb),
                     opt_str(&c.qualifier),
                 )
                 .map_err(|e| e.to_string())?;
@@ -637,6 +645,25 @@ pub fn add_synonym(state: State<AppState>, canonical: String, synonym: String) -
 pub fn remove_synonym(state: State<AppState>, synonym: String) -> Result<(), String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
     db::remove_synonym(&conn, &synonym).map_err(|e| e.to_string())
+}
+
+/// Re-map every classified item's verb through the current verb map; returns how many changed.
+#[tauri::command]
+pub fn renormalize_verbs(state: State<AppState>) -> Result<u32, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let map = db::verb_lookup(&conn).map_err(|e| e.to_string())?;
+    let mut changed = 0u32;
+    for it in db::list_items(&conn).map_err(|e| e.to_string())? {
+        if let Some(v) = &it.verb {
+            if let Some(canon) = map.get(&v.to_ascii_lowercase()) {
+                if canon != v {
+                    db::set_verb(&conn, it.id, canon).map_err(|e| e.to_string())?;
+                    changed += 1;
+                }
+            }
+        }
+    }
+    Ok(changed)
 }
 
 #[cfg(test)]

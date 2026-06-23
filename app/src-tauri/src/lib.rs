@@ -58,6 +58,7 @@ pub fn run() {
             commands::list_verb_map,
             commands::add_synonym,
             commands::remove_synonym,
+            commands::renormalize_verbs,
             commands::refine_item,
             commands::apply_refinement,
             commands::apply_refinement_as_new,
