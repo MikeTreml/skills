@@ -119,12 +119,13 @@ pub fn scan_location(root: &Path, kind: LocationKind) -> std::io::Result<Vec<Sca
             if entry.file_type().is_file() && entry.file_name() == "SKILL.md" {
                 let folder = entry.path().parent().unwrap().to_path_buf();
                 let content = std::fs::read_to_string(entry.path()).unwrap_or_default();
-                let meta = parse_meta(&content);
-                let fallback = folder.file_name().unwrap().to_string_lossy().to_string();
+                // SKILL.md skills are named after their folder (the canonical identity),
+                // not the frontmatter — consistent with custom-dir scanning.
+                let folder_name = folder.file_name().unwrap().to_string_lossy().to_string();
                 found.push(ScannedItem {
                     item_type: ItemType::Skill,
-                    name: non_empty(meta.name, &fallback),
-                    description: meta.description,
+                    name: folder_name,
+                    description: parse_meta(&content).description,
                     hash: hash_path(&folder)?,
                     source_path: folder,
                 });
@@ -199,6 +200,17 @@ mod tests {
         fs::write(skill.join("SKILL.md"), "# no frontmatter\n").unwrap();
         let found = scan_location(d.path(), LocationKind::ClaudeSkills).unwrap();
         assert_eq!(found[0].name, "my-skill");
+    }
+
+    #[test]
+    fn skill_md_named_by_folder_over_frontmatter() {
+        let d = tempfile::tempdir().unwrap();
+        let skill = d.path().join("real-folder");
+        fs::create_dir_all(&skill).unwrap();
+        fs::write(skill.join("SKILL.md"), "---\nname: Fancy Name\ndescription: x\n---\n").unwrap();
+        let found = scan_location(d.path(), LocationKind::ClaudeSkills).unwrap();
+        assert_eq!(found[0].name, "real-folder");
+        assert_eq!(found[0].description, "x");
     }
 
     #[test]
