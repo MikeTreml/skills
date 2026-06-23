@@ -114,10 +114,13 @@ pub fn list_locations(state: State<AppState>) -> Result<Vec<Location>, String> {
     db::list_locations(&conn).map_err(|e| e.to_string())
 }
 
-/// The file to read/write for a library path: the file itself, or SKILL.md inside a folder.
+/// The file to read/write for a library path: the file itself, or SKILL.md inside
+/// a folder. Inferred from the path SHAPE (a `.md` library_path is a single-file
+/// item; anything else is a skill folder) rather than from filesystem existence,
+/// so it stays correct even when the target is temporarily missing.
 fn library_file(library_path: &str) -> PathBuf {
     let p = Path::new(library_path);
-    if p.is_file() {
+    if p.extension().map_or(false, |e| e.eq_ignore_ascii_case("md")) {
         p.to_path_buf()
     } else {
         p.join("SKILL.md")

@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "app",
+  "productName": "Skill & Agent Library",
   "version": "0.1.0",
   "identifier": "com.miket.app",
   "build": {
@@ -13,13 +13,13 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "app",
-        "width": 800,
-        "height": 600
+        "title": "Skill & Agent Library",
+        "width": 1200,
+        "height": 800
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost"
     }
   },
   "bundle": {

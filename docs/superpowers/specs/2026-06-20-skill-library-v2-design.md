@@ -39,11 +39,11 @@ e.g. `Ax › Form — Expert`, `Ax › Enum — Create`, `Twilio — Configure`,
 
 ## AI backend
 
-Anthropic API (Haiku classify, Sonnet/Opus refactor+merge) via the user's `ANTHROPIC_API_KEY`. New Rust component: an HTTP client (`reqwest`) + key from env/OS keychain + batched calls + JSON parsing. This is the largest new dependency in v2.
+OpenAI API (`gpt-4o-mini` for classify, refactor, and merge) via the user's `OPENAI_API_KEY`. New Rust component: an HTTP client (`reqwest`) + key from env + batched calls + JSON parsing. This is the largest new dependency in v2.
 
 ## Milestone roadmap (v2)
 
-- **M2 — Classify + Duplicates** (this plan): verb-synonym table, canonical normalization, Object/Verb/Qualifier columns, AI classifier (Anthropic API), classify action, Object-grouped tree, duplicates/similar view. _Deterministic core (verb map, normalization, dedup) is testable without the API; the API call is the one live piece._
+- **M2 — Classify + Duplicates** (this plan): verb-synonym table, canonical normalization, Object/Verb/Qualifier columns, AI classifier (OpenAI API), classify action, Object-grouped tree, duplicates/similar view. _Deterministic core (verb map, normalization, dedup) is testable without the API; the API call is the one live piece._
 - **M3 — Refactor & Improve**: directive-driven AI refine + tool add/subtract, diff/save/save-as-variant.
 - **M4 — Merge & Archive**: multi-select merge (create/replace), archive state + restore.
 - **M5 — Sync & Deploy**: bidirectional per-location sync with the SKILL.md/agent deploy transform; non-blocking import; folder picker (folder picker may land earlier as polish).

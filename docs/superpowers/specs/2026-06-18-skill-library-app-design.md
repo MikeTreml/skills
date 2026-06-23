@@ -43,7 +43,7 @@ items into clean canonical versions.
 | Sync model | **Bidirectional with per-location diff.** Library holds the reference copy; sync detects drift either way and applies the user-chosen direction. Never deletes a real folder. |
 | Merge scope | **Both** — reconcile same-name variants AND fuse hand-picked items. One engine, then AI refactor to clean form. |
 | Categorization | **AI auto-classify on import**, user override. Tree = category → subcategory → item. Low-confidence → `Untriaged`. |
-| AI backend | **Anthropic API directly** (user's `ANTHROPIC_API_KEY`). Haiku for bulk classify, Sonnet/Opus for merges. |
+| AI backend | **OpenAI API** (user's `OPENAI_API_KEY`). `gpt-4o-mini` for classify, refactor, and merges. |
 | Initial seed | **Import the 2,600-skill `skills-deduped.tar.gz` AND live-scan this machine**, reconciling both. |
 | Item granularity | An item is the **whole folder** (`SKILL.md` + `references/`, `scripts/`, …), content-hashed — not just the `SKILL.md`. |
 | Agents | Treated identically to skills via a `type` field (`skill | agent`). |
@@ -63,11 +63,11 @@ Three layers (see brainstorm mockups in `.superpowers/brainstorm/`):
 - Library Store — SQLite catalog + copied item folders under one library root.
 - Sync Engine — drift detection, per-location diff, safe apply (dry-run, backup,
   atomic replace).
-- Classifier (AI) — assigns category/subcategory on import (Haiku, batched).
+- Classifier (AI) — assigns category/subcategory on import (`gpt-4o-mini`, batched).
 - Merge Engine (AI) — fuses sources, then refactors to clean `SKILL.md`.
 
 **Outside the app**
-- Real locations (each a sync target), the tarball seed, the Anthropic API.
+- Real locations (each a sync target), the tarball seed, the OpenAI API.
 
 ## Data model (SQLite)
 
