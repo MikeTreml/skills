@@ -30,6 +30,7 @@ import {
   type ScanDir,
 } from "./api";
 import { listen } from "@tauri-apps/api/event";
+import { open } from "@tauri-apps/plugin-dialog";
 
 const DIRECTIVES = [
   "Generalize: open it beyond a single tool or topic to broader options",
@@ -142,9 +143,14 @@ function renderSources() {
     .join("");
   sourcesEl.innerHTML =
     `<h3>Custom sources</h3><input id="dir-input" class="dir-input" placeholder="C:\\path\\to\\folder" />` +
+    `<div class="add-row"><button id="dir-browse" class="add-btn">📁 Browse…</button></div>` +
     `<div class="add-row"><button id="add-agents" class="add-btn">+ Agents dir</button><button id="add-skills" class="add-btn">+ Skills dir</button></div>` +
     `<ul class="src-list">${rows}</ul>`;
   const input = document.getElementById("dir-input") as HTMLInputElement;
+  document.getElementById("dir-browse")!.addEventListener("click", async () => {
+    const picked = await open({ directory: true, title: "Pick a skills or agents folder" });
+    if (typeof picked === "string") input.value = picked;
+  });
   const add = async (t: ItemType) => {
     const path = input.value.trim();
     if (!path) return;
