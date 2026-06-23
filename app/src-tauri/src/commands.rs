@@ -214,6 +214,50 @@ pub async fn merge_items(state: State<'_, AppState>, ids: Vec<i64>) -> Result<Me
     Ok(MergeResult { proposed, sources })
 }
 
+/// Create a brand-new library item from markdown content; returns its id.
+fn create_item_from_content(
+    conn: &rusqlite::Connection,
+    library_root: &Path,
+    item_type: ItemType,
+    name: &str,
+    content: &str,
+) -> Result<i64, String> {
+    let slug = {
+        let s = crate::slug::slugify(name);
+        if s.is_empty() {
+            "item".to_string()
+        } else {
+            s
+        }
+    };
+    let base = library_root
+        .join("_uncategorized")
+        .join(item_type.as_str())
+        .join(&slug);
+    let (file, library_path) = if item_type == ItemType::Agent {
+        (base.join(format!("{slug}.md")), base.join(format!("{slug}.md")))
+    } else {
+        (base.join("SKILL.md"), base.clone())
+    };
+    if let Some(parent) = file.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(&file, content).map_err(|e| e.to_string())?;
+    let hash = crate::hash::hash_path(&library_path).map_err(|e| e.to_string())?;
+    let desc = crate::meta::parse_meta(content).description;
+    let (id, _) = db::insert_item_if_absent(
+        conn,
+        item_type,
+        name,
+        &slug,
+        &desc,
+        &hash,
+        &library_path.to_string_lossy(),
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(id)
+}
+
 /// Save a merged file as a NEW library item. mode "replace" archives the sources.
 #[tauri::command]
 pub fn save_merge(
@@ -226,46 +270,27 @@ pub fn save_merge(
     let conn = state.db.lock().map_err(|e| e.to_string())?;
     let type_str = db::item_type(&conn, *ids.first().ok_or("no sources")?).map_err(|e| e.to_string())?;
     let item_type = ItemType::parse(&type_str).unwrap_or(ItemType::Skill);
-    let slug = {
-        let s = crate::slug::slugify(&name);
-        if s.is_empty() {
-            "merged".to_string()
-        } else {
-            s
-        }
-    };
-    let base = state
-        .library_root
-        .join("_uncategorized")
-        .join(item_type.as_str())
-        .join(&slug);
-    let (file, library_path) = if item_type == ItemType::Agent {
-        (base.join(format!("{slug}.md")), base.join(format!("{slug}.md")))
-    } else {
-        (base.join("SKILL.md"), base.clone())
-    };
-    if let Some(parent) = file.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-    std::fs::write(&file, &content).map_err(|e| e.to_string())?;
-    let hash = crate::hash::hash_path(&library_path).map_err(|e| e.to_string())?;
-    let desc = crate::meta::parse_meta(&content).description;
-    let (id, _) = db::insert_item_if_absent(
-        &conn,
-        item_type,
-        &name,
-        &slug,
-        &desc,
-        &hash,
-        &library_path.to_string_lossy(),
-    )
-    .map_err(|e| e.to_string())?;
+    let id = create_item_from_content(&conn, &state.library_root, item_type, &name, &content)?;
     if mode == "replace" {
         for sid in &ids {
             db::set_archived(&conn, *sid, true).map_err(|e| e.to_string())?;
         }
     }
     Ok(id)
+}
+
+/// Save a refinement as a NEW item (keeps the original intact).
+#[tauri::command]
+pub fn apply_refinement_as_new(
+    state: State<AppState>,
+    id: i64,
+    content: String,
+    name: String,
+) -> Result<i64, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let type_str = db::item_type(&conn, id).map_err(|e| e.to_string())?;
+    let item_type = ItemType::parse(&type_str).unwrap_or(ItemType::Skill);
+    create_item_from_content(&conn, &state.library_root, item_type, &name, &content)
 }
 
 #[tauri::command]

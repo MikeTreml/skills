@@ -3,6 +3,7 @@ import {
   addSynonym,
   aiAvailable,
   applyRefinement,
+  applyRefinementAsNew,
   archiveItem,
   classifyAll,
   getItemContent,
@@ -460,9 +461,13 @@ async function runRefine(id: number, name: string) {
 function showRefineDiff(id: number, name: string, res: RefineResult) {
   detailEl.innerHTML =
     `<div class="detail-head"><div class="detail-title"><b>Refined: ${esc(name)}</b></div><button id="rf-x2" class="src-rm" title="Discard">✕</button></div>` +
-    `<div class="add-row"><button id="rf-save" class="primary">Save (overwrite)</button><button id="rf-back" class="add-btn">Back</button></div><p id="rf-status" class="status"></p>` +
+    `<div class="add-row"><input id="rf-name" class="dir-input" value="${esc(name)} (refined)" /></div>` +
+    `<div class="add-row"><button id="rf-save" class="primary">Save (overwrite)</button>` +
+    `<button id="rf-savenew" class="add-btn">Save as new</button>` +
+    `<button id="rf-back" class="add-btn">Back</button></div><p id="rf-status" class="status"></p>` +
     `<div class="rf-head">Proposed</div><pre class="detail-body">${esc(res.proposed)}</pre>` +
     `<div class="rf-head">Original</div><pre class="detail-body dim">${esc(res.original)}</pre>`;
+  const rfErr = (e: unknown) => (document.getElementById("rf-status")!.textContent = `Error: ${e}`);
   document.getElementById("rf-x2")!.addEventListener("click", () => openDetail(id));
   document.getElementById("rf-back")!.addEventListener("click", () => openRefine(id));
   document.getElementById("rf-save")!.addEventListener("click", async () => {
@@ -472,7 +477,18 @@ function showRefineDiff(id: number, name: string, res: RefineResult) {
       openDetail(id);
       statusEl.textContent = "Refinement saved (original backed up).";
     } catch (e) {
-      document.getElementById("rf-status")!.textContent = `Error: ${e}`;
+      rfErr(e);
+    }
+  });
+  document.getElementById("rf-savenew")!.addEventListener("click", async () => {
+    const nm = (document.getElementById("rf-name") as HTMLInputElement).value.trim() || `${name} (refined)`;
+    try {
+      const newId = await applyRefinementAsNew(id, res.proposed, nm);
+      await load();
+      openDetail(newId);
+      statusEl.textContent = "Saved as a new item (original kept).";
+    } catch (e) {
+      rfErr(e);
     }
   });
 }

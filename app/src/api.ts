@@ -75,6 +75,8 @@ export const refineItem = (
 ) => invoke<RefineResult>("refine_item", { id, directives, toolsAdd, toolsRemove });
 export const applyRefinement = (id: number, content: string) =>
   invoke<void>("apply_refinement", { id, content });
+export const applyRefinementAsNew = (id: number, content: string, name: string) =>
+  invoke<number>("apply_refinement_as_new", { id, content, name });
 
 export interface MergeSource {
   id: number;

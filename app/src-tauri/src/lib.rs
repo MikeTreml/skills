@@ -59,6 +59,7 @@ pub fn run() {
             commands::remove_synonym,
             commands::refine_item,
             commands::apply_refinement,
+            commands::apply_refinement_as_new,
             commands::merge_items,
             commands::save_merge,
             commands::archive_item,
