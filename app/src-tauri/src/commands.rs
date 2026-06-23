@@ -226,7 +226,7 @@ fn create_item_from_content(
     name: &str,
     content: &str,
 ) -> Result<i64, String> {
-    let slug = {
+    let base_slug = {
         let s = crate::slug::slugify(name);
         if s.is_empty() {
             "item".to_string()
@@ -234,6 +234,10 @@ fn create_item_from_content(
             s
         }
     };
+    // CRITICAL: never reuse an existing slug. The slug maps 1:1 to a library path,
+    // so writing to a taken slug would overwrite another item's library copy (and
+    // insert_item_if_absent would return that item's id). Pick a fresh slug first.
+    let slug = db::unique_slug(conn, item_type, &base_slug).map_err(|e| e.to_string())?;
     let base = library_root
         .join("_uncategorized")
         .join(item_type.as_str())
@@ -249,7 +253,7 @@ fn create_item_from_content(
     std::fs::write(&file, content).map_err(|e| e.to_string())?;
     let hash = crate::hash::hash_path(&library_path).map_err(|e| e.to_string())?;
     let desc = crate::meta::parse_meta(content).description;
-    let (id, _) = db::insert_item_if_absent(
+    let (id, was_new) = db::insert_item_if_absent(
         conn,
         item_type,
         name,
@@ -259,10 +263,73 @@ fn create_item_from_content(
         &library_path.to_string_lossy(),
     )
     .map_err(|e| e.to_string())?;
+    // unique_slug guarantees this; assert so a future regression can't silently
+    // return (and then delete) an existing item's id.
+    if !was_new {
+        return Err("internal error: merged/new item slug was not unique".into());
+    }
     Ok(id)
 }
 
-/// Save a merged file as a NEW library item. mode "replace" archives the sources.
+fn deleted_backup_dir(library_root: &Path, id: i64) -> PathBuf {
+    library_root.join("_deleted_backups").join(id.to_string())
+}
+
+/// Move `src` (file or dir) to `dst`, replacing `dst`. Falls back to copy+remove
+/// if a plain rename fails (e.g. across volumes).
+fn move_path(src: &Path, dst: &Path) -> Result<(), String> {
+    if dst.is_dir() {
+        std::fs::remove_dir_all(dst).ok();
+    } else if dst.is_file() {
+        std::fs::remove_file(dst).ok();
+    }
+    if std::fs::rename(src, dst).is_ok() {
+        return Ok(());
+    }
+    crate::importer::copy_tree(src, dst).map_err(|e| e.to_string())?;
+    if src.is_dir() {
+        std::fs::remove_dir_all(src).ok();
+    } else {
+        std::fs::remove_file(src).ok();
+    }
+    Ok(())
+}
+
+/// Soft-delete (tombstone) an item: move its library copy into `_deleted_backups`
+/// (recoverable) and mark the DB record deleted so re-import won't resurrect it.
+fn tombstone_item(conn: &rusqlite::Connection, library_root: &Path, id: i64) -> Result<(), String> {
+    let lib_path = db::item_library_path(conn, id).map_err(|e| e.to_string())?;
+    let src = Path::new(&lib_path);
+    if src.exists() {
+        let backup = deleted_backup_dir(library_root, id);
+        std::fs::remove_dir_all(&backup).ok();
+        std::fs::create_dir_all(&backup).map_err(|e| e.to_string())?;
+        let base = src.file_name().ok_or("bad library path")?;
+        move_path(src, &backup.join(base))?;
+    }
+    db::set_deleted(conn, id, true).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Undo a tombstone: move the library copy back and clear the deleted flag.
+fn restore_item(conn: &rusqlite::Connection, library_root: &Path, id: i64) -> Result<(), String> {
+    let lib_path = db::item_library_path(conn, id).map_err(|e| e.to_string())?;
+    let dst = Path::new(&lib_path);
+    let base = dst.file_name().ok_or("bad library path")?;
+    let backup = deleted_backup_dir(library_root, id).join(base);
+    if backup.exists() {
+        if let Some(parent) = dst.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        move_path(&backup, dst)?;
+        std::fs::remove_dir_all(deleted_backup_dir(library_root, id)).ok();
+    }
+    db::set_deleted(conn, id, false).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Save a merged file as a NEW library item. mode "replace" archives the sources;
+/// mode "delete" tombstones them (recoverable, kept out of re-import).
 #[tauri::command]
 pub fn save_merge(
     state: State<AppState>,
@@ -275,10 +342,20 @@ pub fn save_merge(
     let type_str = db::item_type(&conn, *ids.first().ok_or("no sources")?).map_err(|e| e.to_string())?;
     let item_type = ItemType::parse(&type_str).unwrap_or(ItemType::Skill);
     let id = create_item_from_content(&conn, &state.library_root, item_type, &name, &content)?;
-    if mode == "replace" {
-        for sid in &ids {
-            db::set_archived(&conn, *sid, true).map_err(|e| e.to_string())?;
+    // Never touch the freshly-created merged item, even if it somehow shares an id.
+    let sources = ids.iter().copied().filter(|sid| *sid != id);
+    match mode.as_str() {
+        "replace" => {
+            for sid in sources {
+                db::set_archived(&conn, sid, true).map_err(|e| e.to_string())?;
+            }
         }
+        "delete" => {
+            for sid in sources {
+                tombstone_item(&conn, &state.library_root, sid)?;
+            }
+        }
+        _ => {}
     }
     Ok(id)
 }
@@ -307,6 +384,29 @@ pub fn archive_item(state: State<AppState>, id: i64, archived: bool) -> Result<(
 pub fn list_archived(state: State<AppState>) -> Result<Vec<Item>, String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
     db::list_archived(&conn).map_err(|e| e.to_string())
+}
+
+/// Soft-delete (tombstone) items: library copies move to `_deleted_backups`
+/// (recoverable via the Deleted view) and re-import will skip them.
+#[tauri::command]
+pub fn delete_items(state: State<AppState>, ids: Vec<i64>) -> Result<(), String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    for id in &ids {
+        tombstone_item(&conn, &state.library_root, *id)?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn restore_deleted(state: State<AppState>, id: i64) -> Result<(), String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    restore_item(&conn, &state.library_root, id)
+}
+
+#[tauri::command]
+pub fn list_deleted(state: State<AppState>) -> Result<Vec<Item>, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    db::list_deleted(&conn).map_err(|e| e.to_string())
 }
 
 // ---- Milestone 5: sync & deploy ----
@@ -825,6 +925,69 @@ mod tests {
         assert_eq!(summary.items_new, 0);
         assert!(summary.cancelled, "summary flags the cancellation");
         assert_eq!(db::list_items(&conn).unwrap().len(), 0);
+    }
+
+    #[test]
+    fn tombstone_then_restore_round_trip() {
+        let lib = tempfile::tempdir().unwrap();
+        let conn = db::open_in_memory().unwrap();
+        let folder = lib.path().join("_uncategorized/skill/foo");
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(folder.join("SKILL.md"), "body").unwrap();
+        let (id, _) = db::insert_item_if_absent(
+            &conn,
+            ItemType::Skill,
+            "foo",
+            "foo",
+            "d",
+            "h",
+            folder.to_str().unwrap(),
+        )
+        .unwrap();
+
+        tombstone_item(&conn, lib.path(), id).unwrap();
+        assert!(!folder.exists(), "library copy moved into _deleted_backups");
+        assert!(db::list_items(&conn).unwrap().is_empty(), "hidden from library");
+        assert_eq!(db::list_deleted(&conn).unwrap().len(), 1, "shown in Deleted");
+
+        restore_item(&conn, lib.path(), id).unwrap();
+        assert!(folder.join("SKILL.md").exists(), "library copy restored");
+        assert_eq!(db::list_items(&conn).unwrap().len(), 1, "back in library");
+        assert!(db::list_deleted(&conn).unwrap().is_empty());
+    }
+
+    #[test]
+    fn create_item_never_overwrites_a_colliding_slug() {
+        let lib = tempfile::tempdir().unwrap();
+        let conn = db::open_in_memory().unwrap();
+        // An existing source "foo" with real library content.
+        let foo_dir = lib.path().join("_uncategorized/skill/foo");
+        fs::create_dir_all(&foo_dir).unwrap();
+        fs::write(foo_dir.join("SKILL.md"), "ORIGINAL FOO").unwrap();
+        let (foo_id, _) = db::insert_item_if_absent(
+            &conn,
+            ItemType::Skill,
+            "foo",
+            "foo",
+            "d",
+            "h",
+            foo_dir.to_str().unwrap(),
+        )
+        .unwrap();
+
+        // Create a new item NAMED "Foo" — slugifies to the taken "foo".
+        let new_id =
+            create_item_from_content(&conn, lib.path(), ItemType::Skill, "Foo", "MERGED").unwrap();
+
+        assert_ne!(new_id, foo_id, "must be a brand-new item, not the source's id");
+        assert_eq!(
+            fs::read_to_string(foo_dir.join("SKILL.md")).unwrap(),
+            "ORIGINAL FOO",
+            "the source's library copy must be untouched"
+        );
+        let merged_path = db::item_library_path(&conn, new_id).unwrap();
+        assert!(merged_path.contains("foo-2"), "fresh slug, got {merged_path}");
+        assert_eq!(db::list_items(&conn).unwrap().len(), 2);
     }
 
     #[test]

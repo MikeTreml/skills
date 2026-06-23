@@ -303,6 +303,17 @@ body.importing #cancel-import { pointer-events: auto; }
 body.importing .content,
 body.importing .sidebar { opacity: 0.55; }
 
+/* destructive action button */
+.add-btn.danger { color: #b5462f; border-color: #e3b3a8; }
+.add-btn.danger:hover { border-color: #cc5b50; background: #fbeeea; }
+
+/* collapsible Objects tree in the sidebar */
+.nav-tree { border: none; padding: 0; margin: 0; }
+.nav-tree > summary { cursor: pointer; list-style: none; user-select: none; }
+.nav-tree > summary::-webkit-details-marker { display: none; }
+.nav-tree > summary::before { content: "▾ "; color: var(--muted); font-size: 10px; }
+.nav-tree:not([open]) > summary::before { content: "▸ "; }
+
 .desc { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .empty { padding: 30px 16px; color: var(--muted); }
 

@@ -7,9 +7,11 @@ import {
   archiveItem,
   cancelImport,
   classifyAll,
+  deleteItems,
   getItemContent,
   itemSync,
   listArchived,
+  listDeleted,
   listDuplicates,
   listItems,
   listScanDirs,
@@ -22,6 +24,7 @@ import {
   removeScanDir,
   removeSynonym,
   renormalizeVerbs,
+  restoreDeleted,
   runImport,
   saveMerge,
   type DupGroup,
@@ -63,10 +66,12 @@ const emptyEl = document.getElementById("empty") as HTMLParagraphElement;
 const detailEl = document.getElementById("detail") as HTMLElement;
 
 type TypeFilter = "all" | "skill" | "agent";
-type View = "library" | "duplicates" | "archived";
+type View = "library" | "duplicates" | "archived" | "deleted";
 
 let allItems: Item[] = [];
 let archivedItems: Item[] = [];
+let deletedItems: Item[] = [];
+let objectsTreeOpen = true;
 let scanDirs: ScanDir[] = [];
 let dupGroups: DupGroup[] = [];
 let verbMap: [string, string][] = [];
@@ -100,10 +105,12 @@ function renderFilters() {
   let tree: string;
   if (objects.size || untriaged) {
     tree =
-      `<div class="nav-head">Objects</div>` +
+      `<details class="nav-tree" id="obj-tree"${objectsTreeOpen ? " open" : ""}>` +
+      `<summary class="nav-head">Objects</summary>` +
       objBtn(null, "All objects", allItems.length) +
       [...objects.entries()].sort((a, b) => b[1] - a[1]).map(([o, n]) => objBtn(o, o, n)).join("") +
-      (untriaged ? objBtn("__none__", "Untriaged", untriaged) : "");
+      (untriaged ? objBtn("__none__", "Untriaged", untriaged) : "") +
+      `</details>`;
   } else {
     tree = `<div class="nav-note">Run <b>Classify</b> to group by Object.</div>`;
   }
@@ -113,7 +120,7 @@ function renderFilters() {
 
   filtersEl.innerHTML =
     `<div class="nav-group">${typeBtn("all", "All")}${typeBtn("skill", "Skills")}${typeBtn("agent", "Agents")}</div>` +
-    `<div class="nav-group">${viewBtn("library", "Library")}${viewBtn("duplicates", "Duplicates", dupGroups.length)}${viewBtn("archived", "Archived", archivedItems.length)}</div>` +
+    `<div class="nav-group">${viewBtn("library", "Library")}${viewBtn("duplicates", "Duplicates", dupGroups.length)}${viewBtn("archived", "Archived", archivedItems.length)}${viewBtn("deleted", "Deleted", deletedItems.length)}</div>` +
     `<div class="nav-group">${tree}</div>`;
 
   for (const b of filtersEl.querySelectorAll<HTMLButtonElement>("[data-type]"))
@@ -135,6 +142,8 @@ function renderFilters() {
       renderFilters();
       renderMain();
     });
+  const objTree = document.getElementById("obj-tree") as HTMLDetailsElement | null;
+  if (objTree) objTree.addEventListener("toggle", () => (objectsTreeOpen = objTree.open));
 }
 
 function renderSources() {
@@ -232,11 +241,13 @@ function chips(it: Item): string {
   return c.join("");
 }
 
-function itemRow(it: Item, opts: { select?: boolean; restore?: boolean } = {}): string {
+function itemRow(it: Item, opts: { select?: boolean; restore?: "archive" | "delete" } = {}): string {
   const cb = opts.select
     ? `<input type="checkbox" class="sel" data-id="${it.id}"${selection.has(it.id) ? " checked" : ""} />`
     : "";
-  const restore = opts.restore ? `<button class="restore" data-id="${it.id}">Restore</button>` : "";
+  const restore = opts.restore
+    ? `<button class="restore" data-id="${it.id}" data-kind="${opts.restore}">Restore</button>`
+    : "";
   return (
     `<li class="item${it.id === selectedId ? " active" : ""}" data-id="${it.id}">${cb}` +
     `<span class="badge ${it.item_type}">${it.item_type}</span><span class="name">${esc(it.name)}</span>${chips(it)}` +
@@ -257,7 +268,9 @@ function visibleItems(): Item[] {
 
 function renderSelbar() {
   const n = selection.size;
-  if (n === 0 || view !== "library") {
+  // The selection bar (merge/delete/etc.) is available wherever items have
+  // checkboxes: the Library list and the Duplicates groups.
+  if (n === 0 || (view !== "library" && view !== "duplicates")) {
     selbarEl.hidden = true;
     selbarEl.innerHTML = "";
     return;
@@ -266,15 +279,17 @@ function renderSelbar() {
   const dis = n < 2 ? " disabled" : "";
   selbarEl.innerHTML =
     `<span>${n} selected</span>` +
-    `<button id="mc" class="add-btn"${dis}>Merge → Create</button>` +
-    `<button id="mr" class="add-btn"${dis}>Merge → Replace</button>` +
+    `<button id="mc" class="add-btn"${dis} title="AI-merge into a new item; keep the sources">Merge → New</button>` +
+    `<button id="md" class="add-btn"${dis} title="AI-merge into a new item, then delete the sources">Merge → Delete</button>` +
     `<button id="clsel" class="add-btn">Classify</button>` +
     `<button id="arch" class="add-btn">Archive</button>` +
+    `<button id="del" class="add-btn danger" title="Remove (recoverable from the Deleted view)">Delete</button>` +
     `<button id="clr" class="add-btn">Clear</button>`;
   document.getElementById("mc")!.addEventListener("click", () => startMerge("create"));
-  document.getElementById("mr")!.addEventListener("click", () => startMerge("replace"));
+  document.getElementById("md")!.addEventListener("click", () => startMerge("delete"));
   document.getElementById("clsel")!.addEventListener("click", classifySelected);
   document.getElementById("arch")!.addEventListener("click", archiveSelected);
+  document.getElementById("del")!.addEventListener("click", deleteSelected);
   document.getElementById("clr")!.addEventListener("click", () => {
     selection.clear();
     renderMain();
@@ -313,9 +328,17 @@ function renderDuplicates() {
 
 function renderArchived() {
   dupesEl.innerHTML = archivedItems.length
-    ? `<ul class="items">${archivedItems.map((it) => itemRow(it, { restore: true })).join("")}</ul>`
+    ? `<ul class="items">${archivedItems.map((it) => itemRow(it, { restore: "archive" })).join("")}</ul>`
     : `<p class="empty">No archived items.</p>`;
   statusEl.textContent = `${archivedItems.length} archived`;
+}
+
+function renderDeleted() {
+  dupesEl.innerHTML = deletedItems.length
+    ? `<p class="nav-note">Deleted items are kept out of re-import. Restore moves the copy back.</p>` +
+      `<ul class="items">${deletedItems.map((it) => itemRow(it, { restore: "delete" })).join("")}</ul>`
+    : `<p class="empty">No deleted items.</p>`;
+  statusEl.textContent = `${deletedItems.length} deleted`;
 }
 
 function renderMain() {
@@ -327,7 +350,8 @@ function renderMain() {
     listEl.hidden = true;
     dupesEl.hidden = false;
     if (view === "duplicates") renderDuplicates();
-    else renderArchived();
+    else if (view === "archived") renderArchived();
+    else renderDeleted();
   }
   renderSelbar();
 }
@@ -512,8 +536,10 @@ function showRefineDiff(id: number, name: string, res: RefineResult) {
   });
 }
 
-// ---------- merge & archive ----------
-async function startMerge(mode: "create" | "replace") {
+// ---------- merge / archive / delete ----------
+type MergeMode = "create" | "delete";
+
+async function startMerge(mode: MergeMode) {
   if (selection.size < 2) return;
   if (!aiOk) {
     statusEl.textContent = "Set a valid OPENAI_API_KEY (then restart) to merge.";
@@ -528,13 +554,14 @@ async function startMerge(mode: "create" | "replace") {
   }
 }
 
-function showMergeReview(ids: number[], mode: "create" | "replace", res: MergeResult) {
+function showMergeReview(ids: number[], mode: MergeMode, res: MergeResult) {
+  const del = mode === "delete";
   detailEl.hidden = false;
   detailEl.innerHTML =
-    `<div class="detail-head"><div class="detail-title"><b>Merge → ${mode}</b></div><button id="mg-x" class="src-rm" title="Discard">✕</button></div>` +
+    `<div class="detail-head"><div class="detail-title"><b>Merge → ${del ? "Delete sources" : "New"}</b></div><button id="mg-x" class="src-rm" title="Discard">✕</button></div>` +
     `<div class="detail-path">Sources: ${res.sources.map((s) => esc(s.name)).join(", ")}</div>` +
     `<div class="add-row"><input id="mg-name" class="dir-input" value="${esc(res.sources[0]?.name ?? "merged")} (merged)" /></div>` +
-    `<div class="add-row"><button id="mg-save" class="primary">Save ${mode === "replace" ? "(archive sources)" : "as new"}</button></div><p id="mg-status" class="status"></p>` +
+    `<div class="add-row"><button id="mg-save" class="primary">Save ${del ? "& delete sources" : "as new"}</button></div><p id="mg-status" class="status"></p>` +
     `<div class="rf-head">Proposed</div><pre class="detail-body">${esc(res.proposed)}</pre>`;
   document.getElementById("mg-x")!.addEventListener("click", closeDetail);
   document.getElementById("mg-save")!.addEventListener("click", async () => {
@@ -544,9 +571,14 @@ function showMergeReview(ids: number[], mode: "create" | "replace", res: MergeRe
       selection.clear();
       await load();
       openDetail(newId);
-      statusEl.textContent = mode === "replace" ? "Merged; sources archived." : "Merged into a new item.";
+      statusEl.textContent = del
+        ? "Merged; sources deleted (restore from the Deleted view)."
+        : "Merged into a new item.";
     } catch (e) {
-      document.getElementById("mg-status")!.textContent = `Error: ${e}`;
+      await load(); // reflect any partial progress (e.g. some sources already deleted)
+      const st = document.getElementById("mg-status");
+      if (st) st.textContent = `Error: ${e}`;
+      statusEl.textContent = `Error: ${e}`;
     }
   });
 }
@@ -557,6 +589,20 @@ async function archiveSelected() {
   selection.clear();
   await load();
   statusEl.textContent = `Archived ${ids.length} item(s).`;
+}
+
+async function deleteSelected() {
+  const ids = [...selection];
+  if (!ids.length) return;
+  try {
+    await deleteItems(ids);
+    selection.clear();
+    await load();
+    statusEl.textContent = `Deleted ${ids.length} item(s) — restore from the Deleted view.`;
+  } catch (e) {
+    await load(); // reflect any partial progress
+    statusEl.textContent = `Error: ${e}`;
+  }
 }
 
 async function classifySelected() {
@@ -579,9 +625,10 @@ async function classifySelected() {
 
 // ---------- load + events ----------
 async function load() {
-  const [items, arch, dirs, ok, vmap, dups] = await Promise.all([
+  const [items, arch, del, dirs, ok, vmap, dups] = await Promise.all([
     listItems(),
     listArchived(),
+    listDeleted(),
     listScanDirs(),
     aiAvailable(),
     listVerbMap(),
@@ -589,11 +636,19 @@ async function load() {
   ]);
   allItems = items;
   archivedItems = arch;
+  deletedItems = del;
   scanDirs = dirs;
   aiOk = ok;
   verbMap = vmap;
   dupGroups = dups;
   for (const id of [...selection]) if (!allItems.some((i) => i.id === id)) selection.delete(id);
+  // If the item open in the detail pane was just removed (deleted/merged away),
+  // close the pane so it can't show or act on stale/tombstoned content.
+  if (selectedId !== null && !itemById(selectedId) && !archivedItems.some((i) => i.id === selectedId)) {
+    selectedId = null;
+    detailEl.hidden = true;
+    detailEl.innerHTML = "";
+  }
   classifyBtn.disabled = !aiOk;
   classifyBtn.title = aiOk ? "Classify with AI" : "Set OPENAI_API_KEY to enable";
   renderFilters();
@@ -612,7 +667,9 @@ function onRowClick(e: Event) {
     return;
   }
   if (t.classList.contains("restore")) {
-    archiveItem(Number(t.dataset.id), false).then(load);
+    const id = Number(t.dataset.id);
+    const done = t.dataset.kind === "delete" ? restoreDeleted(id) : archiveItem(id, false);
+    done.then(load);
     return;
   }
   const li = t.closest("li.item") as HTMLElement | null;

@@ -95,6 +95,9 @@ export const saveMerge = (ids: number[], content: string, name: string, mode: st
 export const archiveItem = (id: number, archived: boolean) =>
   invoke<void>("archive_item", { id, archived });
 export const listArchived = () => invoke<Item[]>("list_archived");
+export const deleteItems = (ids: number[]) => invoke<void>("delete_items", { ids });
+export const restoreDeleted = (id: number) => invoke<void>("restore_deleted", { id });
+export const listDeleted = () => invoke<Item[]>("list_deleted");
 
 export interface PlacementInfo {
   id: number;

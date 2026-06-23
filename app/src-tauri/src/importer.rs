@@ -36,6 +36,12 @@ pub fn import_scanned(
 
     let to_db = |e: rusqlite::Error| std::io::Error::new(std::io::ErrorKind::Other, e);
 
+    // A user-deleted (tombstoned) item must not be resurrected from its still-present
+    // source — skip it entirely (no copy, no placement, no variant flag).
+    if db::is_tombstoned(conn, scanned.item_type, &slug).map_err(to_db)? {
+        return Ok(());
+    }
+
     let (item_id, was_new) = db::insert_item_if_absent(
         conn,
         scanned.item_type,
@@ -231,6 +237,35 @@ mod tests {
         import_scanned(&conn, lib.path(), loc2, src2.path(), &b, &mut s).unwrap();
         assert_eq!(s.variants_flagged, 1);
         assert!(db::list_items(&conn).unwrap()[0].has_variants);
+    }
+
+    #[test]
+    fn reimport_skips_tombstoned_item() {
+        let conn = db::open_in_memory().unwrap();
+        let lib = tempfile::tempdir().unwrap();
+        let src = tempfile::tempdir().unwrap();
+        let loc_id = db::upsert_location(
+            &conn,
+            "skills",
+            src.path().to_str().unwrap(),
+            LocationKind::ClaudeSkills,
+        )
+        .unwrap();
+        let item = scanned_skill(src.path(), "babysit", "---\nname: babysit\n---\n");
+        let mut s = ImportSummary::default();
+        import_scanned(&conn, lib.path(), loc_id, src.path(), &item, &mut s).unwrap();
+        assert_eq!(s.items_new, 1);
+
+        // User deletes it; its source still exists at the location.
+        let id = db::list_items(&conn).unwrap()[0].id;
+        db::set_deleted(&conn, id, true).unwrap();
+
+        // Re-import the still-present source: it must be skipped, not resurrected.
+        let mut s2 = ImportSummary::default();
+        import_scanned(&conn, lib.path(), loc_id, src.path(), &item, &mut s2).unwrap();
+        assert_eq!(s2.items_new, 0, "tombstoned item is not recreated");
+        assert!(db::list_items(&conn).unwrap().is_empty(), "still hidden from library");
+        assert_eq!(db::list_deleted(&conn).unwrap().len(), 1, "still tombstoned");
     }
 
     #[test]

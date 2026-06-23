@@ -1,5 +1,5 @@
 use crate::model::{Item, ItemType, Location, LocationKind, ScanDir};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 
 pub fn open(path: &std::path::Path) -> rusqlite::Result<Connection> {
     let conn = Connection::open(path)?;
@@ -78,6 +78,7 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
         ("verb", "TEXT"),
         ("qualifier", "TEXT"),
         ("archived", "INTEGER NOT NULL DEFAULT 0"),
+        ("deleted", "INTEGER NOT NULL DEFAULT 0"),
     ] {
         ensure_column(conn, "items", col, decl)?;
     }
@@ -165,6 +166,31 @@ pub fn insert_item_if_absent(
         |r| r.get(0),
     )?;
     Ok((id, changed == 1))
+}
+
+/// A slug not used by any existing item of this type (live, archived, OR deleted),
+/// appending `-2`, `-3`, … as needed. Callers that create a brand-new library item
+/// use this so a colliding slug can never overwrite another item's library copy.
+pub fn unique_slug(conn: &Connection, item_type: ItemType, base: &str) -> rusqlite::Result<String> {
+    let taken = |slug: &str| -> rusqlite::Result<bool> {
+        let n: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM items WHERE item_type = ?1 AND slug = ?2",
+            params![item_type.as_str(), slug],
+            |r| r.get(0),
+        )?;
+        Ok(n > 0)
+    };
+    if !taken(base)? {
+        return Ok(base.to_string());
+    }
+    let mut i = 2;
+    loop {
+        let candidate = format!("{base}-{i}");
+        if !taken(&candidate)? {
+            return Ok(candidate);
+        }
+        i += 1;
+    }
 }
 
 pub fn set_has_variants(conn: &Connection, item_id: i64, value: bool) -> rusqlite::Result<()> {
@@ -260,51 +286,60 @@ pub fn upsert_placement(
 }
 
 pub fn list_items(conn: &Connection) -> rusqlite::Result<Vec<Item>> {
-    query_items(conn, 0)
+    query_items(conn, "archived = 0 AND deleted = 0")
 }
 
 pub fn list_archived(conn: &Connection) -> rusqlite::Result<Vec<Item>> {
-    query_items(conn, 1)
+    query_items(conn, "archived = 1 AND deleted = 0")
+}
+
+/// Tombstoned (soft-deleted) items — shown in the Deleted view, restorable.
+pub fn list_deleted(conn: &Connection) -> rusqlite::Result<Vec<Item>> {
+    query_items(conn, "deleted = 1")
 }
 
 pub fn item_type(conn: &Connection, id: i64) -> rusqlite::Result<String> {
     conn.query_row("SELECT item_type FROM items WHERE id = ?1", params![id], |r| r.get(0))
 }
 
-fn query_items(conn: &Connection, archived: i64) -> rusqlite::Result<Vec<Item>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, item_type, name, slug, description, category, subcategory,
-                object, sub_object, verb, qualifier,
-                canonical_hash, library_path, has_variants, archived
-         FROM items WHERE archived = ?1 ORDER BY name COLLATE NOCASE",
-    )?;
-    let rows = stmt.query_map(params![archived], |r| {
-        let type_str: String = r.get(1)?;
-        Ok(Item {
-            id: r.get(0)?,
-            item_type: ItemType::parse(&type_str).unwrap_or(ItemType::Skill),
-            name: r.get(2)?,
-            slug: r.get(3)?,
-            description: r.get(4)?,
-            category: r.get(5)?,
-            subcategory: r.get(6)?,
-            object: r.get(7)?,
-            sub_object: r.get(8)?,
-            verb: r.get(9)?,
-            qualifier: r.get(10)?,
-            canonical_hash: r.get(11)?,
-            library_path: r.get(12)?,
-            has_variants: r.get::<_, i64>(13)? != 0,
-            archived: r.get::<_, i64>(14)? != 0,
-        })
-    })?;
+const ITEM_COLUMNS: &str = "id, item_type, name, slug, description, category, subcategory,
+     object, sub_object, verb, qualifier, canonical_hash, library_path, has_variants, archived";
+
+fn map_item_row(r: &rusqlite::Row) -> rusqlite::Result<Item> {
+    let type_str: String = r.get(1)?;
+    Ok(Item {
+        id: r.get(0)?,
+        item_type: ItemType::parse(&type_str).unwrap_or(ItemType::Skill),
+        name: r.get(2)?,
+        slug: r.get(3)?,
+        description: r.get(4)?,
+        category: r.get(5)?,
+        subcategory: r.get(6)?,
+        object: r.get(7)?,
+        sub_object: r.get(8)?,
+        verb: r.get(9)?,
+        qualifier: r.get(10)?,
+        canonical_hash: r.get(11)?,
+        library_path: r.get(12)?,
+        has_variants: r.get::<_, i64>(13)? != 0,
+        archived: r.get::<_, i64>(14)? != 0,
+    })
+}
+
+/// `where_clause` is a trusted, code-supplied SQL condition (never user input).
+fn query_items(conn: &Connection, where_clause: &str) -> rusqlite::Result<Vec<Item>> {
+    let sql = format!(
+        "SELECT {ITEM_COLUMNS} FROM items WHERE {where_clause} ORDER BY name COLLATE NOCASE"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map([], map_item_row)?;
     rows.collect()
 }
 
 /// Items not yet classified (object IS NULL), for the AI classifier. Returns (id, name, description).
 pub fn unclassified_items(conn: &Connection) -> rusqlite::Result<Vec<(i64, String, String)>> {
     let mut stmt = conn.prepare(
-        "SELECT id, name, description FROM items WHERE object IS NULL AND archived = 0 ORDER BY id",
+        "SELECT id, name, description FROM items WHERE object IS NULL AND archived = 0 AND deleted = 0 ORDER BY id",
     )?;
     let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
     rows.collect()
@@ -333,6 +368,27 @@ pub fn set_archived(conn: &Connection, item_id: i64, archived: bool) -> rusqlite
         params![item_id, archived as i64],
     )?;
     Ok(())
+}
+
+pub fn set_deleted(conn: &Connection, item_id: i64, deleted: bool) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE items SET deleted=?2, updated_at=datetime('now') WHERE id=?1",
+        params![item_id, deleted as i64],
+    )?;
+    Ok(())
+}
+
+/// True if an item with this (type, slug) exists AND is tombstoned. Re-import
+/// consults this so a user-deleted item is not resurrected from its still-present source.
+pub fn is_tombstoned(conn: &Connection, item_type: ItemType, slug: &str) -> rusqlite::Result<bool> {
+    let deleted: Option<i64> = conn
+        .query_row(
+            "SELECT deleted FROM items WHERE item_type = ?1 AND slug = ?2",
+            params![item_type.as_str(), slug],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(deleted == Some(1))
 }
 
 pub fn list_verb_map(conn: &Connection) -> rusqlite::Result<Vec<(String, String)>> {
@@ -537,6 +593,26 @@ mod tests {
         assert_eq!(list_items(&c).unwrap().len(), 1);
         set_archived(&c, id, true).unwrap();
         assert!(list_items(&c).unwrap().is_empty());
+    }
+
+    #[test]
+    fn deleted_items_are_tombstoned_hidden_and_restorable() {
+        let c = open_in_memory().unwrap();
+        let (id, _) =
+            insert_item_if_absent(&c, ItemType::Skill, "x", "x", "d", "h", "lib/x").unwrap();
+        assert!(!is_tombstoned(&c, ItemType::Skill, "x").unwrap());
+
+        set_deleted(&c, id, true).unwrap();
+        assert!(list_items(&c).unwrap().is_empty(), "hidden from library");
+        assert!(list_archived(&c).unwrap().is_empty(), "and from archived");
+        assert_eq!(list_deleted(&c).unwrap().len(), 1, "shown in deleted view");
+        assert!(is_tombstoned(&c, ItemType::Skill, "x").unwrap());
+        // A different slug is not tombstoned.
+        assert!(!is_tombstoned(&c, ItemType::Skill, "y").unwrap());
+
+        set_deleted(&c, id, false).unwrap();
+        assert_eq!(list_items(&c).unwrap().len(), 1, "restore brings it back");
+        assert!(list_deleted(&c).unwrap().is_empty());
     }
 
     #[test]
