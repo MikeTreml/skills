@@ -411,12 +411,14 @@ pub fn import_all(
     library_root: &Path,
     home: &Path,
     tarball_path: Option<&Path>,
+    report: &dyn Fn(String),
 ) -> Result<crate::model::ImportSummary, String> {
     let mut summary = crate::model::ImportSummary::default();
 
     let mut locations = default_location_candidates(home);
     locations.extend(discover_project_locations(&home.join("Repo")));
     for (label, path, kind) in locations {
+        report(format!("Scanning {label}…"));
         scan_and_import_location(conn, library_root, &label, &path, kind, &mut summary)?;
     }
 
@@ -460,7 +462,7 @@ pub fn import_all(
             )
             .map_err(|e| e.to_string())?;
             let staging = library_root.join("_staging");
-            importer::import_tarball(conn, library_root, loc_id, tarball, &staging, &mut summary)
+            importer::import_tarball(conn, library_root, loc_id, tarball, &staging, &mut summary, report)
                 .map_err(|e| e.to_string())?;
         }
     }
@@ -468,13 +470,21 @@ pub fn import_all(
 }
 
 #[tauri::command]
-pub fn run_import(state: State<AppState>) -> Result<crate::model::ImportSummary, String> {
+pub fn run_import(
+    app: tauri::AppHandle,
+    state: State<AppState>,
+) -> Result<crate::model::ImportSummary, String> {
+    use tauri::Emitter;
     let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let report = |msg: String| {
+        let _ = app.emit("import-progress", msg);
+    };
     import_all(
         &conn,
         &state.library_root,
         &state.home,
         state.tarball_path.as_deref(),
+        &report,
     )
 }
 
@@ -660,7 +670,7 @@ mod tests {
         let conn = db::open_in_memory().unwrap();
         db::add_scan_dir(&conn, custom.path().to_str().unwrap(), ItemType::Skill).unwrap();
 
-        let summary = import_all(&conn, lib.path(), home.path(), None).unwrap();
+        let summary = import_all(&conn, lib.path(), home.path(), None, &|_| {}).unwrap();
 
         let names: Vec<_> = db::list_items(&conn)
             .unwrap()
@@ -708,7 +718,7 @@ mod tests {
         let home = dirs::home_dir().expect("home dir");
         let lib = tempfile::tempdir().unwrap();
         let conn = db::open_in_memory().unwrap();
-        let summary = import_all(&conn, lib.path(), &home, None).unwrap();
+        let summary = import_all(&conn, lib.path(), &home, None, &|_| {}).unwrap();
         let items = db::list_items(&conn).unwrap();
         let agents = items
             .iter()

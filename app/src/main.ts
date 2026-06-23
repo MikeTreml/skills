@@ -628,6 +628,9 @@ classifyBtn.addEventListener("click", async () => {
 listen<{ done: number; total: number }>("classify-progress", (e) => {
   statusEl.textContent = `Classifying… ${e.payload.done}/${e.payload.total}`;
 });
+listen<string>("import-progress", (e) => {
+  statusEl.textContent = e.payload;
+});
 
 window.addEventListener("error", (ev) => {
   statusEl.textContent = `JS error: ${ev.message}`;

@@ -120,19 +120,19 @@ pub fn import_tarball(
     tarball_path: &Path,
     staging_dir: &Path,
     summary: &mut ImportSummary,
+    report: &dyn Fn(String),
 ) -> std::io::Result<()> {
+    report("Extracting tarball…".to_string());
     std::fs::create_dir_all(staging_dir)?;
     let file = std::fs::File::open(tarball_path)?;
     Archive::new(GzDecoder::new(file)).unpack(staging_dir)?;
-    for scanned in scan_location(staging_dir, LocationKind::ClaudeSkills)? {
-        import_scanned(
-            conn,
-            library_root,
-            tarball_location_id,
-            staging_dir,
-            &scanned,
-            summary,
-        )?;
+    let scanned = scan_location(staging_dir, LocationKind::ClaudeSkills)?;
+    let total = scanned.len();
+    for (i, item) in scanned.iter().enumerate() {
+        import_scanned(conn, library_root, tarball_location_id, staging_dir, item, summary)?;
+        if i % 200 == 0 {
+            report(format!("Importing tarball… {i}/{total}"));
+        }
     }
     // The extracted tarball can be several MB; remove it now that everything
     // has been copied into the library so it doesn't accumulate on disk.
@@ -251,7 +251,7 @@ mod tests {
         .unwrap();
         let mut s = ImportSummary::default();
 
-        import_tarball(&conn, lib.path(), loc, &tgz, &staging, &mut s).unwrap();
+        import_tarball(&conn, lib.path(), loc, &tgz, &staging, &mut s, &|_| {}).unwrap();
 
         assert_eq!(s.items_new, 1);
         assert!(lib
