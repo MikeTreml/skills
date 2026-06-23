@@ -96,6 +96,8 @@ pub struct ImportSummary {
     pub items_new: u32,
     pub placements_recorded: u32,
     pub variants_flagged: u32,
+    /// True when the import stopped early because cancellation was requested.
+    pub cancelled: bool,
 }
 
 /// A user-added directory to scan, tagged as holding agents or skills.

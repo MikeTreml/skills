@@ -294,6 +294,15 @@ body { overflow: hidden; }
   white-space: nowrap;
 }
 .sbtn:hover { border-color: var(--accent); }
+
+/* During an import, only the Cancel button is interactive. The import holds the
+   single DB connection for its whole run, so letting other DB-touching commands
+   fire would block the main thread (and could even wedge Cancel). */
+body.importing #app { pointer-events: none; }
+body.importing #cancel-import { pointer-events: auto; }
+body.importing .content,
+body.importing .sidebar { opacity: 0.55; }
+
 .desc { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .empty { padding: 30px 16px; color: var(--muted); }
 

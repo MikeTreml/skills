@@ -26,6 +26,7 @@ export interface ImportSummary {
   items_new: number;
   placements_recorded: number;
   variants_flagged: number;
+  cancelled: boolean;
 }
 
 export interface ScanDir {
@@ -37,6 +38,7 @@ export interface ScanDir {
 
 export const listItems = () => invoke<Item[]>("list_items");
 export const runImport = () => invoke<ImportSummary>("run_import");
+export const cancelImport = () => invoke<void>("cancel_import");
 export const getItemContent = (id: number) => invoke<string>("get_item_content", { id });
 
 export interface DupGroup {

@@ -41,6 +41,8 @@ pub fn run() {
                 library_root,
                 home,
                 tarball_path,
+                import_cancel: std::sync::atomic::AtomicBool::new(false),
+                import_running: std::sync::atomic::AtomicBool::new(false),
             });
             Ok(())
         })
@@ -48,6 +50,7 @@ pub fn run() {
             commands::list_items,
             commands::list_locations,
             commands::run_import,
+            commands::cancel_import,
             commands::get_item_content,
             commands::list_scan_dirs,
             commands::add_scan_dir,

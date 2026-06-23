@@ -5,6 +5,7 @@ import {
   applyRefinement,
   applyRefinementAsNew,
   archiveItem,
+  cancelImport,
   classifyAll,
   getItemContent,
   itemSync,
@@ -49,6 +50,7 @@ const TOOLS = [
 
 const searchEl = document.getElementById("search") as HTMLInputElement;
 const importBtn = document.getElementById("import") as HTMLButtonElement;
+const cancelBtn = document.getElementById("cancel-import") as HTMLButtonElement;
 const classifyBtn = document.getElementById("classify") as HTMLButtonElement;
 const statusEl = document.getElementById("status")!;
 const selbarEl = document.getElementById("selbar")!;
@@ -628,15 +630,35 @@ searchEl.addEventListener("input", () => {
 
 importBtn.addEventListener("click", async () => {
   importBtn.disabled = true;
+  cancelBtn.hidden = false;
+  cancelBtn.disabled = false;
+  // Gate the rest of the UI: the import holds the single DB connection for its
+  // whole run, so any other DB-touching command would block the main thread.
+  // `body.importing` disables everything except the Cancel button (see styles.css),
+  // keeping the main thread free so Cancel is always honored.
+  document.body.classList.add("importing");
   statusEl.textContent = "Importing… (scanning locations + tarball)";
   try {
-    const s = await runImport();
+    const s = await runImport(); // resolves on done OR cancel; s.cancelled says which
     await load();
-    statusEl.textContent = `Imported ${s.items_new} new · ${s.variants_flagged} variants · ${allItems.length} total`;
+    statusEl.textContent = s.cancelled
+      ? `Cancelled — kept ${s.items_new} new (partial, re-runnable) · ${allItems.length} total`
+      : `Imported ${s.items_new} new · ${s.variants_flagged} variants · ${allItems.length} total`;
   } catch (e) {
     statusEl.textContent = `Error: ${e}`;
   } finally {
     importBtn.disabled = false;
+    cancelBtn.hidden = true;
+    document.body.classList.remove("importing");
+  }
+});
+cancelBtn.addEventListener("click", async () => {
+  cancelBtn.disabled = true;
+  statusEl.textContent = "Cancelling…";
+  try {
+    await cancelImport();
+  } catch (e) {
+    statusEl.textContent = `Error: ${e}`;
   }
 });
 

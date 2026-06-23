@@ -96,6 +96,10 @@ pub struct AppState {
     pub library_root: PathBuf,
     pub home: PathBuf,
     pub tarball_path: Option<PathBuf>,
+    /// Cooperative cancel flag for a running import.
+    pub import_cancel: std::sync::atomic::AtomicBool,
+    /// Re-entrancy guard: true while an import is in flight.
+    pub import_running: std::sync::atomic::AtomicBool,
 }
 
 #[tauri::command]
@@ -437,18 +441,27 @@ pub fn import_all(
     home: &Path,
     tarball_path: Option<&Path>,
     report: &dyn Fn(String),
+    is_cancelled: &dyn Fn() -> bool,
 ) -> Result<crate::model::ImportSummary, String> {
     let mut summary = crate::model::ImportSummary::default();
 
     let mut locations = default_location_candidates(home);
     locations.extend(discover_project_locations(&home.join("Repo")));
     for (label, path, kind) in locations {
+        if is_cancelled() {
+            summary.cancelled = true;
+            return Ok(summary);
+        }
         report(format!("Scanning {label}…"));
         scan_and_import_location(conn, library_root, &label, &path, kind, &mut summary)?;
     }
 
     // User-added scan directories, with type-aware custom detection + titling.
     for sd in db::list_scan_dirs(conn).map_err(|e| e.to_string())? {
+        if is_cancelled() {
+            summary.cancelled = true;
+            return Ok(summary);
+        }
         if !sd.enabled {
             continue;
         }
@@ -487,30 +500,90 @@ pub fn import_all(
             )
             .map_err(|e| e.to_string())?;
             let staging = library_root.join("_staging");
-            importer::import_tarball(conn, library_root, loc_id, tarball, &staging, &mut summary, report)
-                .map_err(|e| e.to_string())?;
+            importer::import_tarball(
+                conn,
+                library_root,
+                loc_id,
+                tarball,
+                &staging,
+                &mut summary,
+                report,
+                is_cancelled,
+            )
+            .map_err(|e| e.to_string())?;
         }
     }
     Ok(summary)
 }
 
+/// Run the import on a blocking thread so the UI/event loop stays free and a
+/// concurrent `cancel_import` can be honored. The `MutexGuard<Connection>` is
+/// created and dropped entirely inside the synchronous `spawn_blocking` closure
+/// (no `.await` inside it), so the connection never crosses an await point.
 #[tauri::command]
-pub fn run_import(
-    app: tauri::AppHandle,
-    state: State<AppState>,
-) -> Result<crate::model::ImportSummary, String> {
-    use tauri::Emitter;
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
-    let report = |msg: String| {
-        let _ = app.emit("import-progress", msg);
-    };
-    import_all(
-        &conn,
-        &state.library_root,
-        &state.home,
-        state.tarball_path.as_deref(),
-        &report,
-    )
+pub async fn run_import(app: tauri::AppHandle) -> Result<crate::model::ImportSummary, String> {
+    use std::sync::atomic::Ordering;
+    use tauri::{Emitter, Manager};
+
+    // Reject a second import while one is already running; reset the cancel flag.
+    {
+        let state = app.state::<AppState>();
+        if state
+            .import_running
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return Err("An import is already running.".into());
+        }
+        state.import_cancel.store(false, Ordering::SeqCst);
+    }
+
+    let app2 = app.clone();
+    let join = tauri::async_runtime::spawn_blocking(move || {
+        // Re-fetch managed state ON this blocking thread (AppState is
+        // Send + Sync + 'static — the only bound state::<T>() requires — so no
+        // Arc<Mutex<…>> is needed; the `db` field stays a plain Mutex).
+        let state = app2.state::<AppState>();
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        let report = |msg: String| {
+            let _ = app2.emit("import-progress", msg);
+        };
+        let is_cancelled = || state.import_cancel.load(Ordering::SeqCst);
+        import_all(
+            &conn,
+            &state.library_root,
+            &state.home,
+            state.tarball_path.as_deref(),
+            &report,
+            &is_cancelled,
+        )
+        // `conn` (the guard) drops here, at the end of the closure.
+    });
+
+    // JoinHandle's Output is tauri::Result<T>; map the JoinError (e.g. a panic in
+    // the blocking task) to a String. Whether the run was cancelled now travels in
+    // ImportSummary.cancelled (set by import_all), so the awaited return value alone
+    // tells the UI what happened — no terminal event, no event/return-order race.
+    let result = join.await.map_err(|e| e.to_string());
+
+    // Always clear the running flag (success, cancel, error, or panic).
+    app.state::<AppState>()
+        .import_running
+        .store(false, Ordering::SeqCst);
+
+    match result {
+        Ok(inner) => inner,
+        Err(join_err) => Err(join_err),
+    }
+}
+
+/// Request cancellation of a running import. Flips an atomic only — never touches
+/// the DB lock — so it returns instantly even while the import holds the connection.
+#[tauri::command]
+pub fn cancel_import(state: State<AppState>) {
+    state
+        .import_cancel
+        .store(true, std::sync::atomic::Ordering::SeqCst);
 }
 
 #[derive(serde::Serialize)]
@@ -722,7 +795,7 @@ mod tests {
         let conn = db::open_in_memory().unwrap();
         db::add_scan_dir(&conn, custom.path().to_str().unwrap(), ItemType::Skill).unwrap();
 
-        let summary = import_all(&conn, lib.path(), home.path(), None, &|_| {}).unwrap();
+        let summary = import_all(&conn, lib.path(), home.path(), None, &|_| {}, &|| false).unwrap();
 
         let names: Vec<_> = db::list_items(&conn)
             .unwrap()
@@ -732,6 +805,26 @@ mod tests {
         assert!(names.contains(&"my-skill-folder".to_string()), "got {names:?}");
         assert!(names.contains(&"Loose One".to_string()), "got {names:?}");
         assert!(summary.items_new >= 2);
+    }
+
+    #[test]
+    fn import_all_short_circuits_when_cancelled() {
+        let home = tempfile::tempdir().unwrap(); // empty: no default/project locations
+        let lib = tempfile::tempdir().unwrap();
+        let custom = tempfile::tempdir().unwrap();
+        let folder = custom.path().join("would-import");
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(folder.join("SKILL.md"), "---\nname: x\n---\nbody").unwrap();
+
+        let conn = db::open_in_memory().unwrap();
+        db::add_scan_dir(&conn, custom.path().to_str().unwrap(), ItemType::Skill).unwrap();
+
+        // Already cancelled → returns Ok with an empty, valid catalog.
+        let summary = import_all(&conn, lib.path(), home.path(), None, &|_| {}, &|| true).unwrap();
+
+        assert_eq!(summary.items_new, 0);
+        assert!(summary.cancelled, "summary flags the cancellation");
+        assert_eq!(db::list_items(&conn).unwrap().len(), 0);
     }
 
     #[test]
@@ -770,7 +863,7 @@ mod tests {
         let home = dirs::home_dir().expect("home dir");
         let lib = tempfile::tempdir().unwrap();
         let conn = db::open_in_memory().unwrap();
-        let summary = import_all(&conn, lib.path(), &home, None, &|_| {}).unwrap();
+        let summary = import_all(&conn, lib.path(), &home, None, &|_| {}, &|| false).unwrap();
         let items = db::list_items(&conn).unwrap();
         let agents = items
             .iter()

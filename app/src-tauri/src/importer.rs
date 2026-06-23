@@ -121,14 +121,29 @@ pub fn import_tarball(
     staging_dir: &Path,
     summary: &mut ImportSummary,
     report: &dyn Fn(String),
+    is_cancelled: &dyn Fn() -> bool,
 ) -> std::io::Result<()> {
     report("Extracting tarball…".to_string());
     std::fs::create_dir_all(staging_dir)?;
+    // Don't even start the multi-second unpack if cancellation is already pending.
+    if is_cancelled() {
+        std::fs::remove_dir_all(staging_dir).ok();
+        summary.cancelled = true;
+        return Ok(());
+    }
     let file = std::fs::File::open(tarball_path)?;
     Archive::new(GzDecoder::new(file)).unpack(staging_dir)?;
     let scanned = scan_location(staging_dir, LocationKind::ClaudeSkills)?;
     let total = scanned.len();
     for (i, item) in scanned.iter().enumerate() {
+        // Checked every iteration (an atomic load is free) so Cancel feels instant.
+        // The i==0 check also covers cancellation during unpack/scan above.
+        // Always lands BETWEEN whole-item writes — each import_scanned autocommits.
+        if is_cancelled() {
+            std::fs::remove_dir_all(staging_dir).ok();
+            summary.cancelled = true;
+            return Ok(());
+        }
         import_scanned(conn, library_root, tarball_location_id, staging_dir, item, summary)?;
         if i % 200 == 0 {
             report(format!("Importing tarball… {i}/{total}"));
@@ -251,7 +266,7 @@ mod tests {
         .unwrap();
         let mut s = ImportSummary::default();
 
-        import_tarball(&conn, lib.path(), loc, &tgz, &staging, &mut s, &|_| {}).unwrap();
+        import_tarball(&conn, lib.path(), loc, &tgz, &staging, &mut s, &|_| {}, &|| false).unwrap();
 
         assert_eq!(s.items_new, 1);
         assert!(lib
@@ -262,5 +277,58 @@ mod tests {
             !staging.exists(),
             "staging dir should be cleaned up after import_tarball returns"
         );
+    }
+
+    #[test]
+    fn tarball_import_honors_cancel_midway() {
+        use flate2::{write::GzEncoder, Compression};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        // A tar.gz with three skill folders (scanned in sorted order a, b, c).
+        let tmp = tempfile::tempdir().unwrap();
+        let tgz = tmp.path().join("skills.tar.gz");
+        {
+            let f = std::fs::File::create(&tgz).unwrap();
+            let enc = GzEncoder::new(f, Compression::default());
+            let mut tar = tar::Builder::new(enc);
+            for name in ["a", "b", "c"] {
+                let mut header = tar::Header::new_gnu();
+                let body = format!("---\nname: {name}\n---\n");
+                header.set_size(body.len() as u64);
+                header.set_mode(0o644);
+                header.set_cksum();
+                tar.append_data(&mut header, format!("{name}/SKILL.md"), body.as_bytes())
+                    .unwrap();
+            }
+            tar.into_inner().unwrap().finish().unwrap();
+        }
+
+        let conn = db::open_in_memory().unwrap();
+        let lib = tempfile::tempdir().unwrap();
+        let staging = tmp.path().join("staging");
+        let loc =
+            db::upsert_location(&conn, "tarball", tgz.to_str().unwrap(), LocationKind::Tarball)
+                .unwrap();
+        let mut s = ImportSummary::default();
+
+        // Checks: [0] pre-unpack (false), [1] loop i=0 (false → import item a),
+        // [2] loop i=1 (true → stop before item b). So exactly one item imports.
+        let calls = AtomicUsize::new(0);
+        import_tarball(
+            &conn,
+            lib.path(),
+            loc,
+            &tgz,
+            &staging,
+            &mut s,
+            &|_| {},
+            &|| calls.fetch_add(1, Ordering::SeqCst) >= 2,
+        )
+        .unwrap();
+
+        assert_eq!(s.items_new, 1, "should stop after the first item");
+        assert!(s.cancelled, "summary flags the early stop");
+        assert_eq!(db::list_items(&conn).unwrap().len(), 1, "partial catalog is valid");
+        assert!(!staging.exists(), "staging dir cleaned up on cancel");
     }
 }
