@@ -280,6 +280,110 @@ pub fn list_archived(state: State<AppState>) -> Result<Vec<Item>, String> {
     db::list_archived(&conn).map_err(|e| e.to_string())
 }
 
+// ---- Milestone 5: sync & deploy ----
+
+fn placement_abs(root_path: &str, rel_path: &str) -> PathBuf {
+    Path::new(root_path).join(rel_path)
+}
+
+/// Compare a location target's current content to the library's canonical hash.
+fn sync_status(canonical_hash: &str, abs: &Path) -> String {
+    if !abs.exists() {
+        return "missing".to_string();
+    }
+    match crate::hash::hash_path(abs) {
+        Ok(h) if h == canonical_hash => "in_sync".to_string(),
+        Ok(_) => "drifted".to_string(),
+        Err(_) => "error".to_string(),
+    }
+}
+
+/// Replace `dst` (file or dir) with a copy of `src`.
+fn copy_over(src: &Path, dst: &Path) -> Result<(), String> {
+    if dst.is_dir() {
+        std::fs::remove_dir_all(dst).map_err(|e| e.to_string())?;
+    } else if dst.exists() {
+        std::fs::remove_file(dst).map_err(|e| e.to_string())?;
+    }
+    if let Some(parent) = dst.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    importer::copy_tree(src, dst).map_err(|e| e.to_string())
+}
+
+/// Back up whatever is at `target` into the library's `_sync_backups` (one slot per placement).
+fn backup_before_overwrite(library_root: &Path, placement_id: i64, target: &Path) -> Result<(), String> {
+    if !target.exists() {
+        return Ok(());
+    }
+    let dir = library_root.join("_sync_backups").join(placement_id.to_string());
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir).ok();
+    }
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let name = target
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "backup".to_string());
+    importer::copy_tree(target, &dir.join(name)).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn item_sync(state: State<AppState>, id: i64) -> Result<Vec<crate::model::PlacementInfo>, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let canonical = db::item_canonical_hash(&conn, id).map_err(|e| e.to_string())?;
+    let places = db::placements_for_item(&conn, id).map_err(|e| e.to_string())?;
+    Ok(places
+        .into_iter()
+        .map(|(pid, label, root, rel)| {
+            let abs = placement_abs(&root, &rel);
+            crate::model::PlacementInfo {
+                id: pid,
+                location_label: label,
+                status: sync_status(&canonical, &abs),
+                abs_path: abs.to_string_lossy().to_string(),
+            }
+        })
+        .collect())
+}
+
+#[tauri::command]
+pub fn read_placement(state: State<AppState>, placement_id: i64) -> Result<String, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let (_item, root, rel) = db::placement_paths(&conn, placement_id).map_err(|e| e.to_string())?;
+    read_library_content(&placement_abs(&root, &rel).to_string_lossy()).map_err(|e| e.to_string())
+}
+
+/// Push the library copy OUT to the location (location := library); backs up the location first.
+#[tauri::command]
+pub fn push_to_location(state: State<AppState>, placement_id: i64) -> Result<(), String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let (item_id, root, rel) = db::placement_paths(&conn, placement_id).map_err(|e| e.to_string())?;
+    let lib_path = db::item_library_path(&conn, item_id).map_err(|e| e.to_string())?;
+    let abs = placement_abs(&root, &rel);
+    backup_before_overwrite(&state.library_root, placement_id, &abs)?;
+    copy_over(Path::new(&lib_path), &abs)?;
+    let canonical = db::item_canonical_hash(&conn, item_id).map_err(|e| e.to_string())?;
+    db::update_placement_sync(&conn, placement_id, &canonical, "in_sync").map_err(|e| e.to_string())
+}
+
+/// Pull the location copy INTO the library (library := location); backs up the library first.
+#[tauri::command]
+pub fn pull_from_location(state: State<AppState>, placement_id: i64) -> Result<(), String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let (item_id, root, rel) = db::placement_paths(&conn, placement_id).map_err(|e| e.to_string())?;
+    let abs = placement_abs(&root, &rel);
+    if !abs.exists() {
+        return Err("location copy is missing".into());
+    }
+    let lib_path = db::item_library_path(&conn, item_id).map_err(|e| e.to_string())?;
+    backup_before_overwrite(&state.library_root, placement_id, Path::new(&lib_path))?;
+    copy_over(&abs, Path::new(&lib_path))?;
+    let new_hash = crate::hash::hash_path(Path::new(&lib_path)).map_err(|e| e.to_string())?;
+    db::set_canonical_hash(&conn, item_id, &new_hash).map_err(|e| e.to_string())?;
+    db::update_placement_sync(&conn, placement_id, &new_hash, "in_sync").map_err(|e| e.to_string())
+}
+
 fn scan_and_import_location(
     conn: &rusqlite::Connection,
     library_root: &Path,
@@ -527,6 +631,18 @@ mod tests {
         let f = d.path().join("agent.md");
         fs::write(&f, "FILE BODY").unwrap();
         assert_eq!(read_library_content(f.to_str().unwrap()).unwrap(), "FILE BODY");
+    }
+
+    #[test]
+    fn sync_status_detects_states() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("a.md");
+        fs::write(&f, "hello").unwrap();
+        let h = crate::hash::hash_path(&f).unwrap();
+        assert_eq!(sync_status(&h, &f), "in_sync");
+        fs::write(&f, "changed").unwrap();
+        assert_eq!(sync_status(&h, &f), "drifted");
+        assert_eq!(sync_status(&h, &d.path().join("missing.md")), "missing");
     }
 
     #[test]

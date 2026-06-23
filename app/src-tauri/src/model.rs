@@ -106,3 +106,12 @@ pub struct ScanDir {
     pub item_type: ItemType,
     pub enabled: bool,
 }
+
+/// One place an item lives, with its current sync state vs the library copy.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlacementInfo {
+    pub id: i64,
+    pub location_label: String,
+    pub abs_path: String,
+    pub status: String, // in_sync | drifted | missing
+}

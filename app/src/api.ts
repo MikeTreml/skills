@@ -90,3 +90,17 @@ export const saveMerge = (ids: number[], content: string, name: string, mode: st
 export const archiveItem = (id: number, archived: boolean) =>
   invoke<void>("archive_item", { id, archived });
 export const listArchived = () => invoke<Item[]>("list_archived");
+
+export interface PlacementInfo {
+  id: number;
+  location_label: string;
+  abs_path: string;
+  status: string; // in_sync | drifted | missing
+}
+export const itemSync = (id: number) => invoke<PlacementInfo[]>("item_sync", { id });
+export const readPlacement = (placementId: number) =>
+  invoke<string>("read_placement", { placementId });
+export const pushToLocation = (placementId: number) =>
+  invoke<void>("push_to_location", { placementId });
+export const pullFromLocation = (placementId: number) =>
+  invoke<void>("pull_from_location", { placementId });

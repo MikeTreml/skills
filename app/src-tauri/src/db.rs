@@ -199,6 +199,45 @@ pub fn set_canonical_hash(conn: &Connection, item_id: i64, hash: &str) -> rusqli
     Ok(())
 }
 
+/// Each place an item lives: (placement_id, location_label, root_path, rel_path).
+pub fn placements_for_item(
+    conn: &Connection,
+    item_id: i64,
+) -> rusqlite::Result<Vec<(i64, String, String, String)>> {
+    let mut stmt = conn.prepare(
+        "SELECT p.id, l.label, l.root_path, p.rel_path
+         FROM placements p JOIN locations l ON p.location_id = l.id
+         WHERE p.item_id = ?1 ORDER BY l.label",
+    )?;
+    let rows = stmt.query_map(params![item_id], |r| {
+        Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+    })?;
+    rows.collect()
+}
+
+/// (item_id, root_path, rel_path) for one placement.
+pub fn placement_paths(conn: &Connection, placement_id: i64) -> rusqlite::Result<(i64, String, String)> {
+    conn.query_row(
+        "SELECT p.item_id, l.root_path, p.rel_path
+         FROM placements p JOIN locations l ON p.location_id = l.id WHERE p.id = ?1",
+        params![placement_id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    )
+}
+
+pub fn update_placement_sync(
+    conn: &Connection,
+    placement_id: i64,
+    hash: &str,
+    status: &str,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE placements SET location_hash=?2, status=?3, last_scanned=datetime('now') WHERE id=?1",
+        params![placement_id, hash, status],
+    )?;
+    Ok(())
+}
+
 pub fn upsert_placement(
     conn: &Connection,
     item_id: i64,
@@ -487,5 +526,29 @@ mod tests {
         assert!(list_verb_map(&c).unwrap().iter().any(|(_, s)| s == "spawn"));
         remove_synonym(&c, "spawn").unwrap();
         assert!(!list_verb_map(&c).unwrap().iter().any(|(_, s)| s == "spawn"));
+    }
+
+    #[test]
+    fn placements_join_and_update() {
+        let c = open_in_memory().unwrap();
+        let (item_id, _) =
+            insert_item_if_absent(&c, ItemType::Skill, "x", "x", "d", "h", "lib/x").unwrap();
+        let loc = upsert_location(&c, "Claude skills", "/home/.claude/skills", LocationKind::ClaudeSkills).unwrap();
+        upsert_placement(&c, item_id, loc, "x", "h", "in_sync").unwrap();
+
+        let places = placements_for_item(&c, item_id).unwrap();
+        assert_eq!(places.len(), 1);
+        let (pid, label, root, rel) = places[0].clone();
+        assert_eq!((label, root, rel), ("Claude skills".into(), "/home/.claude/skills".into(), "x".into()));
+
+        let (it, root2, rel2) = placement_paths(&c, pid).unwrap();
+        assert_eq!(it, item_id);
+        assert_eq!((root2, rel2), ("/home/.claude/skills".into(), "x".into()));
+
+        update_placement_sync(&c, pid, "newhash", "drifted").unwrap();
+        let status: String = c
+            .query_row("SELECT status FROM placements WHERE id=?1", [pid], |r| r.get(0))
+            .unwrap();
+        assert_eq!(status, "drifted");
     }
 }

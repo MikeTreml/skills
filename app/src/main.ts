@@ -6,12 +6,16 @@ import {
   archiveItem,
   classifyAll,
   getItemContent,
+  itemSync,
   listArchived,
   listDuplicates,
   listItems,
   listScanDirs,
   listVerbMap,
   mergeItems,
+  pullFromLocation,
+  pushToLocation,
+  readPlacement,
   refineItem,
   removeScanDir,
   removeSynonym,
@@ -330,6 +334,7 @@ async function openDetail(id: number) {
     `<div class="detail-chips">${chips(it)}</div>` +
     (it.description ? `<p class="detail-desc">${esc(it.description)}</p>` : "") +
     `<div class="detail-path" title="${esc(it.library_path)}">${esc(it.library_path)}</div>` +
+    `<div class="sync-panel" id="sync-panel"></div>` +
     `<pre class="detail-body">Loading…</pre>`;
   document.getElementById("detail-close")!.addEventListener("click", closeDetail);
   document.getElementById("detail-refine")!.addEventListener("click", () => openRefine(id));
@@ -339,11 +344,67 @@ async function openDetail(id: number) {
     await load();
     statusEl.textContent = "Archived.";
   });
+  renderSyncPanel(id);
   const body = detailEl.querySelector(".detail-body")!;
   try {
     body.textContent = await getItemContent(id);
   } catch (e) {
     body.textContent = `Error: ${e}`;
+  }
+}
+
+// ---------- sync & deploy ----------
+async function renderSyncPanel(id: number) {
+  const el = document.getElementById("sync-panel");
+  if (!el) return;
+  try {
+    const places = await itemSync(id);
+    if (!places.length) {
+      el.innerHTML = `<div class="rf-head">Locations &amp; sync</div><div class="nav-note">No tracked locations.</div>`;
+      return;
+    }
+    el.innerHTML =
+      `<div class="rf-head">Locations &amp; sync</div>` +
+      places
+        .map(
+          (p) =>
+            `<div class="sync-row"><span class="sdot ${p.status}"></span>` +
+            `<span class="sync-label" title="${esc(p.abs_path)}">${esc(p.location_label)}</span>` +
+            `<span class="sync-status">${p.status.replace("_", " ")}</span>` +
+            `<button class="sbtn" data-act="diff" data-pid="${p.id}">Diff</button>` +
+            `<button class="sbtn" data-act="push" data-pid="${p.id}">Push →</button>` +
+            `<button class="sbtn" data-act="pull" data-pid="${p.id}">← Pull</button></div>`,
+        )
+        .join("");
+    for (const b of el.querySelectorAll<HTMLButtonElement>(".sbtn"))
+      b.addEventListener("click", () => onSyncAction(id, Number(b.dataset.pid), b.dataset.act!));
+  } catch (e) {
+    el.innerHTML = `<div class="nav-note">Sync error: ${esc(String(e))}</div>`;
+  }
+}
+
+async function onSyncAction(id: number, pid: number, act: string) {
+  try {
+    if (act === "diff") {
+      const [lib, loc] = await Promise.all([getItemContent(id), readPlacement(pid)]);
+      detailEl.innerHTML =
+        `<div class="detail-head"><div class="detail-title"><b>Library vs location</b></div><button id="sd-x" class="src-rm" title="Back">✕</button></div>` +
+        `<div class="rf-head">Library (canonical)</div><pre class="detail-body">${esc(lib)}</pre>` +
+        `<div class="rf-head">Location</div><pre class="detail-body dim">${esc(loc)}</pre>`;
+      document.getElementById("sd-x")!.addEventListener("click", () => openDetail(id));
+      return;
+    }
+    if (act === "push") {
+      await pushToLocation(pid);
+      statusEl.textContent = "Pushed library → location (original backed up).";
+    } else if (act === "pull") {
+      await pullFromLocation(pid);
+      await load();
+      statusEl.textContent = "Pulled location → library (original backed up).";
+    }
+    await renderSyncPanel(id);
+  } catch (e) {
+    statusEl.textContent = `Error: ${e}`;
   }
 }
 

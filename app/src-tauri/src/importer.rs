@@ -83,7 +83,7 @@ pub fn import_scanned(
 }
 
 /// Recursively copy a file or directory tree to `dst`.
-fn copy_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
+pub fn copy_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
     if src.is_file() {
         if let Some(parent) = dst.parent() {
             std::fs::create_dir_all(parent)?;
